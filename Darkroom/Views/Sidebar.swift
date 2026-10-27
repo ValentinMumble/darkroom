@@ -35,9 +35,11 @@ struct Sidebar: View {
             let originals = library.shrinkRecords.values.filter { $0.copy != nil && library.itemsById[$0.original] != nil }
             return originals.isEmpty ? "" : "\(originals.count) to delete"
         }
+        // Not worked out until the view is first opened
+        if entry == .lifeless && library.lifeless == nil { return "" }
         guard let tally = library.tallies[entry], tally.count > 0 else { return "0" }
         // Where a replacement applies, what it would free matters more than the size
-        if entry == .live || entry == .edited || entry == .rotated {
+        if entry == .live || entry == .lifeless || entry == .edited || entry == .rotated {
             return "\(tally.count.formatted()) · −\(Format.bytes(tally.saving))"
         }
         return "\(tally.count.formatted()) · \(Format.bytes(tally.size))"

@@ -81,7 +81,8 @@ enum Similar {
         return Fingerprint(hash: differenceHash(image), score: request.results?.first?.overallScore)
     }
 
-    private static func smallImage(_ asset: PHAsset) -> CGImage? {
+    /// The photo as it looks now, at most `pixels` on its longer side, waited for: only called off the main thread
+    static func smallImage(_ asset: PHAsset, pixels: CGFloat = 360) -> CGImage? {
         let options = PHImageRequestOptions()
         options.isSynchronous = true
         options.isNetworkAccessAllowed = true
@@ -89,7 +90,7 @@ enum Similar {
         options.resizeMode = .fast
         var result: CGImage?
         PHImageManager.default().requestImage(
-            for: asset, targetSize: CGSize(width: 360, height: 360), contentMode: .aspectFit, options: options
+            for: asset, targetSize: CGSize(width: pixels, height: pixels), contentMode: .aspectFit, options: options
         ) { image, _ in
             result = image?.cgImage(forProposedRect: nil, context: nil, hints: nil)
         }

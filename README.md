@@ -29,6 +29,7 @@ Darkroom counts every file iCloud stores for an item, so the sizes it shows add 
 | Videos, Photos | everything, biggest first, with the size iCloud really stores |
 | Duplicates & Similar | exact copies first, which can all go in one click; then photos taken less than a minute apart that look alike, with the best one picked to keep |
 | Live Photos | **Remove Motion**: each one becomes a still, with its edit, the same date, place, favorite and albums |
+| No People or Pets | Live Photos where Vision finds no person, face, cat or dog: the motion rarely matters there |
 | Edited | **Keep Edited Version**: the edited version alone replaces the item, and the original under it goes; a Live Photo stays live, with its edited motion |
 | Only Rotated | edits that only rotate an item (or change nothing), where the original is a full extra copy: same Keep Edited Version |
 | Screenshots | rarely worth keeping for long |

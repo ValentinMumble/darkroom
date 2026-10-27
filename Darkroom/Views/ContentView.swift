@@ -15,14 +15,21 @@ struct ContentView: View {
     @State private var shrinkRequest: ShrinkRequest?
     @State private var replaceRequest: ReplaceRequest?
     @State private var keyMonitor: Any?
+    @AppStorage("VideosNotShrunkOnly") private var notShrunkOnly = false
 
     private var current: Destination { destination ?? .videos }
+
+    /// The destination's items, before the year and search filters
+    private func listed(_ item: Item) -> Bool {
+        current.includes(item, shrink: library.shrinkStatus, lifeless: library.lifeless ?? [])
+            && (current != .videos || !notShrunkOnly || library.shrinkUntried(item))
+    }
 
     private var shown: [Item] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
         return library.items
             .filter { item in
-                current.includes(item, shrink: library.shrinkStatus)
+                listed(item)
                     && (year == 0 || Calendar.current.component(.year, from: item.date) == year)
                     && (query.isEmpty || item.filename.lowercased().contains(query))
             }
@@ -34,7 +41,7 @@ struct ContentView: View {
     }
 
     private var years: [Int] {
-        let years = library.items.filter { current.includes($0, shrink: library.shrinkStatus) }
+        let years = library.items.filter(listed)
             .map { Calendar.current.component(.year, from: $0.date) }
         return Array(Set(years)).sorted(by: >)
     }
@@ -153,6 +160,12 @@ struct ContentView: View {
                 switch current.page {
                 case .groups: GroupsView(selection: $selection, actions: actions)
                 case .shrinking: ShrinkView(actions: actions)
+                case .grid where current == .lifeless && library.lifeless == nil:
+                    ProgressView(value: library.subjectsProgress) {
+                        Text("Looking for people and pets in each Live Photo…")
+                    }
+                    .padding(40)
+                    .task { await library.findSubjects() }
                 case .grid: GridView(items: shown, selection: $selection, actions: actions)
                 }
             }
@@ -164,7 +177,7 @@ struct ContentView: View {
         let shrinkable = selected.filter { library.shrinkSkip($0) == nil }.count
         let live = selected.filter(\.live).count
         let edited = selected.filter(Replacement.keepEdit.applies).count
-        if current == .live || (live > 0 && current != .edited && current != .rotated) {
+        if current == .live || current == .lifeless || (live > 0 && current != .edited && current != .rotated) {
             ToolbarItem {
                 Button {
                     actions.replace(selected, .removeMotion)
@@ -214,6 +227,13 @@ struct ContentView: View {
                 Picker("Year", selection: $year) {
                     Text("All Years").tag(0)
                     ForEach(years, id: \.self) { Text(String($0)).tag($0) }
+                }
+                if current == .videos {
+                    Picker("Show", selection: $notShrunkOnly) {
+                        Text("All Videos").tag(false)
+                        Text("Not Shrunk Yet").tag(true)
+                    }
+                    .help("Not Shrunk Yet hides shrunk copies, originals that have one, videos tried before and slow-motion videos")
                 }
                 Button("Select All", systemImage: "checkmark.circle") { selection = Set(shown.map(\.id)) }
                     .help("Select every item shown (Cmd-A)")

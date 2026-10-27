@@ -31,6 +31,9 @@ final class Library {
     private(set) var recentlyDeleted: Result<RecentlyDeleted, RecentlyDeleted.Failure>?
     private(set) var similarGroups: [ItemGroup]?
     private(set) var similarProgress = 0.0
+    /// Live Photos where Vision found no person, face, cat or dog: nil until worked out
+    private(set) var lifeless: Set<String>?
+    private(set) var subjectsProgress = 0.0
     private(set) var shrinkRecords: [String: ShrinkRecord] = ShrinkRecords.load()
     private(set) var shrinkStatus = ShrinkStatus()
     private(set) var savings: [Saving] = Savings.load()
@@ -38,6 +41,7 @@ final class Library {
 
     @ObservationIgnored private var resources: [String: CachedResources] = [:]
     @ObservationIgnored private var fingerprints: [String: Similar.Fingerprint] = [:]
+    @ObservationIgnored private var subjects: [String: Bool] = [:]
     @ObservationIgnored private var observer: ChangeObserver?
     @ObservationIgnored private var pendingReload: Task<Void, Never>?
 
@@ -77,7 +81,7 @@ final class Library {
         items = loaded
         itemsById = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0) })
         shrinkStatus = ShrinkStatus(records: shrinkRecords)
-        tallies = Self.tallies(loaded, shrink: shrinkStatus)
+        tallies = Self.tallies(loaded, shrink: shrinkStatus, lifeless: lifeless ?? [])
         state = .ready
         duplicateGroups = await Task.detached { Library.duplicateGroups(loaded) }.value
         let total = loaded.reduce(0) { $0 + $1.size }
@@ -85,6 +89,7 @@ final class Library {
             "Loaded \(loaded.count) items, \(Format.bytes(total)), \(self.duplicateGroups.count) duplicate groups, in \(Date.now.timeIntervalSince(started), format: .fixed(precision: 1))s"
         )
         if similarGroups != nil { await computeSimilar() }
+        if lifeless != nil { await computeSubjects() }
         await refreshStorage()
         log.notice(
             "iCloud: \(self.storage?.apps.count ?? 0) apps, plan \(self.storage?.total ?? 0), free \(self.storage?.free ?? 0)")
@@ -133,10 +138,10 @@ final class Library {
         }
     }
 
-    private static func tallies(_ items: [Item], shrink: ShrinkStatus) -> [Destination: Tally] {
+    private static func tallies(_ items: [Item], shrink: ShrinkStatus, lifeless: Set<String>) -> [Destination: Tally] {
         var tallies: [Destination: Tally] = [:]
         for item in items {
-            for destination in Destination.allCases where destination.includes(item, shrink: shrink) {
+            for destination in Destination.allCases where destination.includes(item, shrink: shrink, lifeless: lifeless) {
                 tallies[destination, default: Tally()].count += 1
                 tallies[destination, default: Tally()].size += item.size
                 tallies[destination, default: Tally()].saving += destination.replacement?.saving(item) ?? 0
@@ -167,6 +172,38 @@ final class Library {
         similarGroups = groups
         log.notice(
             "Similar: \(groups.count) groups of \(groups.reduce(0) { $0 + $1.itemIds.count }) photos in \(Date.now.timeIntervalSince(started), format: .fixed(precision: 1))s"
+        )
+    }
+
+    // MARK: People and pets
+
+    func findSubjects() async {
+        guard lifeless == nil else { return }
+        await computeSubjects()
+    }
+
+    /// Checks each Live Photo once: the answers are kept, so after the first time only new ones cost anything
+    private func computeSubjects() async {
+        let started = Date.now
+        let live = items.filter(\.live)
+        let known = subjects
+        let answers = await Task.detached(priority: .userInitiated) {
+            var answers = known
+            for (index, item) in live.enumerated() where answers[item.id] == nil {
+                if let living = Subjects.living(item.asset) { answers[item.id] = living }
+                if index % 20 == 0 {
+                    let fraction = Double(index) / Double(live.count)
+                    Task { @MainActor in self.subjectsProgress = fraction }
+                }
+            }
+            return answers
+        }.value
+        subjects = answers
+        let found = Set(live.filter { answers[$0.id] == false }.map(\.id))
+        lifeless = found
+        tallies = Self.tallies(items, shrink: shrinkStatus, lifeless: found)
+        log.notice(
+            "Subjects: \(found.count) of \(live.count) Live Photos without people or pets, in \(Date.now.timeIntervalSince(started), format: .fixed(precision: 1))s"
         )
     }
 
@@ -284,7 +321,7 @@ final class Library {
         shrinkRecords[record.original] = record
         ShrinkRecords.save(shrinkRecords)
         shrinkStatus = ShrinkStatus(records: shrinkRecords)
-        tallies = Self.tallies(items, shrink: shrinkStatus)
+        tallies = Self.tallies(items, shrink: shrinkStatus, lifeless: lifeless ?? [])
     }
 
     /// Why a video cannot be shrunk, or nil
@@ -294,6 +331,11 @@ final class Library {
         if shrinkStatus.shrunk.contains(item.id) { return "already shrunk" }
         if shrinkStatus.copies[item.id] != nil { return "is a shrunk copy" }
         return nil
+    }
+
+    /// A video left to try: it can be shrunk, and no copy was made or refused before
+    func shrinkUntried(_ item: Item) -> Bool {
+        shrinkSkip(item) == nil && !shrinkStatus.kept.contains(item.id)
     }
 
     /// What shrinking did to a video, whether it is the original or the copy

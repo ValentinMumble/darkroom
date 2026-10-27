@@ -2,7 +2,7 @@ import Foundation
 
 /// The entries of the sidebar: each one a view of the library with its own filter and explanation.
 enum Destination: String, CaseIterable, Identifiable, Hashable {
-    case videos, photos, similar, live, edited, rotated, screenshots, shrinking, favorites
+    case videos, photos, similar, live, lifeless, edited, rotated, screenshots, shrinking, favorites
 
     /// What the main area shows for a destination
     enum Page { case grid, groups, shrinking }
@@ -14,7 +14,7 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
     var section: String {
         switch self {
         case .videos, .photos: "Library"
-        case .similar, .live, .edited, .rotated, .screenshots, .shrinking: "Free up space"
+        case .similar, .live, .lifeless, .edited, .rotated, .screenshots, .shrinking: "Free up space"
         case .favorites: "Browse"
         }
     }
@@ -38,6 +38,7 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .edited: "Edited"
         case .rotated: "Only Rotated"
         case .live: "Live Photos"
+        case .lifeless: "No People or Pets"
         }
     }
 
@@ -52,6 +53,7 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .edited: "slider.horizontal.3"
         case .rotated: "rotate.right"
         case .live: "livephoto"
+        case .lifeless: "mountain.2"
         }
     }
 
@@ -71,6 +73,8 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
             "iCloud keeps both the original and the edited version of these. Select some, then Keep Edited Version: the edited version is saved as a new item with the same date, place, favorite and albums, and the original is deleted. A Live Photo stays a Live Photo, with its edited motion. The edit can no longer be undone."
         case .rotated:
             "Edits that only rotate an item, or change nothing at all: iCloud still keeps the original under them, a full extra copy. Select some, then Keep Edited Version: the rotated version is saved as a new item with the same date, place, favorite and albums, and the original is deleted. A Live Photo stays a Live Photo, with its rotated motion."
+        case .lifeless:
+            "Live Photos where Vision, on this Mac, found no person, face, cat or dog: landscapes, food, things, where the motion rarely adds much. Select some, then Remove Motion: each becomes a still, with its edit, the same date, place, favorite and albums. It can miss someone small or turned away, so look before removing."
         case .live:
             "Live Photos carry a few seconds of video, often bigger than the photo itself. Select some, then Remove Motion: each becomes a still, with its edit, the same date, place, favorite and albums."
         }
@@ -79,14 +83,15 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
     /// What the toolbar's main button does here, and what the sidebar counts it would free
     var replacement: Replacement? {
         switch self {
-        case .live: .removeMotion
+        case .live, .lifeless: .removeMotion
         case .edited, .rotated: .keepEdit
         default: nil
         }
     }
 
     /// Whether the grid of this destination shows an item
-    func includes(_ item: Item, shrink: ShrinkStatus) -> Bool {
+    /// `lifeless`: Live Photos where Vision found nobody (see Subjects)
+    func includes(_ item: Item, shrink: ShrinkStatus, lifeless: Set<String> = []) -> Bool {
         switch self {
         case .videos: item.kind == .video
         case .photos: item.kind == .photo
@@ -96,6 +101,7 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .edited: Replacement.keepEdit.applies(to: item)
         case .rotated: item.onlyRotated
         case .live: item.live
+        case .lifeless: item.live && lifeless.contains(item.id)
         }
     }
 }
