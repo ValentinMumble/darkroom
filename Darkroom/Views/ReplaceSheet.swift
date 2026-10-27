@@ -79,7 +79,7 @@ struct ReplaceSheet: View {
     private func start(_ targets: [Item]) {
         message = "Starting…"
         Task {
-            outcome = await library.replace(targets) { text, count in
+            outcome = await library.replace(targets, kind: kind) { text, count in
                 message = text
                 done = count
             }

@@ -70,7 +70,8 @@ libvmaf. Everything else works without it.
   quota service in `~/Library/Caches/com.apple.iCloudNotificationAgent/Cache.db`, among them
   `getCloudStorageApps`: the numbers System Settings shows. The plan size follows from the share of the plan
   each app takes, and `brctl quota` gives the free space live, every minute. macOS refreshes the split by app
-  only now and then, so the sidebar also shows what was freed since. iCloud counts in powers of 1024
+  only now and then, so the sidebar also shows what was freed since, and a running total of what Darkroom
+  itself freed, kept across launches in `~/Library/Application Support/Darkroom/savings.json`. iCloud counts in powers of 1024
   (37,472,142,715 bytes show as "34.9 GB"), so the app does too.
 - **Similar shots** compare a 64-bit difference hash of a small render: one bit per pixel of a 9x8 grey
   thumbnail, set when it is brighter than its right neighbour. On a 7,000-item library, shots of the same
@@ -112,6 +113,7 @@ libvmaf. Everything else works without it.
 | `Darkroom/Model/Replacer.swift` | Remove Motion and Keep Edited Version |
 | `Darkroom/Model/Shrinker.swift`, `FFmpeg.swift` | shrinking videos |
 | `Darkroom/Model/ICloudStorage.swift` | iCloud storage by app |
+| `Darkroom/Model/Savings.swift` | the space Darkroom freed, kept across launches |
 | `Darkroom/Model/DateChange.swift` | date changes and reading dates from file names |
 | `Darkroom/Model/Destination.swift` | the sidebar entries and sort orders |
 | `Darkroom/Views/` | the SwiftUI views |

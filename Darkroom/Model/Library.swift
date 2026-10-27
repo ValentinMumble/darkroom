@@ -32,6 +32,7 @@ final class Library {
     private(set) var similarProgress = 0.0
     private(set) var shrinkRecords: [String: ShrinkRecord] = ShrinkRecords.load()
     private(set) var shrinkStatus = ShrinkStatus()
+    private(set) var savings: [Saving] = Savings.load()
     var error: String?
 
     @ObservationIgnored private var resources: [String: CachedResources] = [:]
@@ -173,7 +174,12 @@ final class Library {
     /// Deletes for real: macOS asks for confirmation, and the items go to Recently Deleted for 30 days.
     func delete(_ targets: [Item]) async {
         let assets = targets.map(\.asset) as NSArray
-        await change { PHAssetChangeRequest.deleteAssets(assets) }
+        guard await change({ PHAssetChangeRequest.deleteAssets(assets) }) else { return }
+        // A shrunk original frees only what its copy does not take back
+        let shrunk = targets.filter { shrinkRecords[$0.id]?.copy != nil }
+        let others = targets.filter { shrinkRecords[$0.id]?.copy == nil }
+        addSaving(.shrunk, shrunk.count, shrunk.reduce(0) { $0 + max(0, $1.size - (shrinkRecords[$1.id]?.after ?? 0)) })
+        addSaving(.deleted, others.count, others.reduce(0) { $0 + $1.size })
     }
 
     func setFavorite(_ targets: [Item], _ favorite: Bool) async {
@@ -188,18 +194,27 @@ final class Library {
         }
     }
 
-    private func change(_ block: @escaping () -> Void) async {
+    /// Whether the change went through
+    @discardableResult
+    private func change(_ block: @escaping () -> Void) async -> Bool {
         do {
             try await PHPhotoLibrary.shared().performChanges(block)
         } catch let failure as NSError where failure.domain == PHPhotosErrorDomain
             && failure.code == PHPhotosError.userCancelled.rawValue
         {
-            return
+            return false
         } catch {
             self.error = error.localizedDescription
-            return
+            return false
         }
         await reload()
+        return true
+    }
+
+    private func addSaving(_ kind: Saving.Kind, _ count: Int, _ bytes: Int64) {
+        guard count > 0 else { return }
+        savings.append(Saving(date: .now, kind: kind, count: count, bytes: bytes))
+        Savings.save(savings)
     }
 
     struct ReplaceOutcome {
@@ -214,7 +229,7 @@ final class Library {
 
     /// Replaces items by their current version alone (see Replacement). `progress` gets a message and how
     /// many items are done.
-    func replace(_ targets: [Item], progress: @escaping (String, Int) -> Void) async -> ReplaceOutcome {
+    func replace(_ targets: [Item], kind: Replacement, progress: @escaping (String, Int) -> Void) async -> ReplaceOutcome {
         var outcome = ReplaceOutcome()
         let folder = FileManager.default.temporaryDirectory.appending(path: "darkroom-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -235,8 +250,10 @@ final class Library {
             progress("Waiting for you to confirm the deletion…", done)
             do {
                 try await Task.detached { [entries] in try await Replacer.replace(entries) }.value
+                let freed = entries.reduce(0) { $0 + Replacement.saving($1.item) }
                 outcome.replaced += entries.count
-                outcome.freed += entries.reduce(0) { $0 + Replacement.saving($1.item) }
+                outcome.freed += freed
+                addSaving(kind == .removeMotion ? .removedMotion : .keptEdit, entries.count, freed)
             } catch let failure as NSError where failure.domain == PHPhotosErrorDomain
                 && failure.code == PHPhotosError.userCancelled.rawValue
             {

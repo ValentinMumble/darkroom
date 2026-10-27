@@ -74,6 +74,19 @@ struct StorageView: View {
         return total - free
     }
 
+    /// The saved total by kind of change, since the first one
+    private var savedDetail: String {
+        let byKind = Dictionary(grouping: library.savings, by: \.kind)
+        let lines = Saving.Kind.allCases.compactMap { kind -> String? in
+            guard let entries = byKind[kind] else { return nil }
+            let count = entries.reduce(0) { $0 + $1.count }
+            return "\(kind.label): \(Format.count(count, kind.noun)), \(Format.bytes(entries.reduce(0) { $0 + $1.bytes }))"
+        }
+        let since = library.savings.first.map { "Since \($0.date.formatted(date: .abbreviated, time: .omitted))\n" } ?? ""
+        return since + lines.joined(separator: "\n")
+            + "\nDeleted items count against iCloud until Recently Deleted is emptied."
+    }
+
     var body: some View {
         // What changed since macOS last fetched the split by app: positive when space was freed
         let freedSince = storage.used - used
@@ -124,6 +137,15 @@ struct StorageView: View {
                         Spacer()
                         Text(Format.bytes(abs(freedSince))).foregroundStyle(freedSince > 0 ? .green : .secondary)
                     }
+                }
+                if !library.savings.isEmpty {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle").frame(width: 8)
+                        Text("Saved with Darkroom")
+                        Spacer()
+                        Text(Format.bytes(library.savings.reduce(0) { $0 + $1.bytes })).foregroundStyle(.green)
+                    }
+                    .help(savedDetail)
                 }
                 Text("By app as of \(Format.time(fetchedAt)) · free space live")
                     .foregroundStyle(.tertiary)
