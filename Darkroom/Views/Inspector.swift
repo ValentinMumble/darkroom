@@ -42,6 +42,7 @@ struct Actions {
 struct ItemMenu: View {
     let items: [Item]
     let actions: Actions
+    @Environment(Library.self) private var library
 
     var body: some View {
         let favorite = items.allSatisfy(\.favorite)
@@ -55,6 +56,9 @@ struct ItemMenu: View {
         }
         if items.contains(where: \.live) {
             Button("Remove Motion…") { actions.replace(items, .removeMotion) }
+            Button(items.filter(\.live).allSatisfy { library.marked.contains($0.id) } ? "Unmark (M)" : "Mark for Remove Motion (M)") {
+                library.toggleMark(items)
+            }
         }
         if items.contains(where: Replacement.keepEdit.applies) {
             Button("Keep Edited Version Only…") { actions.replace(items, .keepEdit) }
@@ -69,6 +73,7 @@ struct ItemMenu: View {
 struct ActionButtons: View {
     let items: [Item]
     let actions: Actions
+    @Environment(Library.self) private var library
 
     var body: some View {
         let favorite = items.allSatisfy(\.favorite)
@@ -87,6 +92,11 @@ struct ActionButtons: View {
                 Button("Remove Motion (−\(Format.bytes(Replacement.removeMotion.saving(of: items))))…", systemImage: "livephoto.slash") {
                     actions.replace(items, .removeMotion)
                 }
+                let marked = items.filter(\.live).allSatisfy { library.marked.contains($0.id) }
+                Button(marked ? "Unmark (M)" : "Mark for Remove Motion (M)", systemImage: marked ? "xmark.circle" : "checklist") {
+                    library.toggleMark(items)
+                }
+                .help("Mark it, check the next one, then remove the motion of all marked ones at once from Live Photos")
             }
             if items.contains(where: Replacement.keepEdit.applies) {
                 Button("Keep Edited Version Only (−\(Format.bytes(Replacement.keepEdit.saving(of: items))))…", systemImage: "wand.and.stars") {

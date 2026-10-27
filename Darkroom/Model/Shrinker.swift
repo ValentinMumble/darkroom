@@ -158,8 +158,22 @@ final class Shrinker {
         let minQuality: Double
         var phase = Phase.queued
         var progress = 0.0
+        /// How much of the video has come from Photos: it can start before the job's turn, and is 1 once done
+        var downloaded: Double?
         var record: ShrinkRecord?
         var error: String?
+    }
+
+    /// A job's video being fetched from Photos into a folder of its own, possibly ahead of its turn
+    private struct Download {
+        let jobId: UUID
+        let folder: URL
+        let file: Task<URL, Error>
+
+        func discard() {
+            file.cancel()
+            try? FileManager.default.removeItem(at: folder)
+        }
     }
 
     /// Keep a copy only when it is at least this much smaller
@@ -190,6 +204,7 @@ final class Shrinker {
     }
 
     private func work() async {
+        var ahead: Download?
         while let job = jobs.first(where: { $0.phase == .queued }) {
             // Deleted while it waited: nothing left to shrink
             guard library.itemsById[job.item.id] != nil else {
@@ -199,19 +214,49 @@ final class Shrinker {
                 }
                 continue
             }
-            await run(job)
+            let download: Download
+            if let ahead, ahead.jobId == job.id {
+                download = ahead
+            } else {
+                ahead?.discard()
+                download = startDownload(job)
+            }
+            // The next video downloads while this one is shrunk, so it is ready when its turn comes
+            ahead = jobs.first { $0.phase == .queued && $0.id != job.id }.map(startDownload)
+            await run(job, download)
         }
+        ahead?.discard()
         worker = nil
     }
 
-    private func run(_ job: Job) async {
+    private func startDownload(_ job: Job) -> Download {
         let id = job.id
+        let item = job.item
         let folder = FileManager.default.temporaryDirectory.appending(path: "darkroom-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: folder) }
-        do {
+        let file = Task.detached(priority: .utility) {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // The video as Photos shows it, so an edited one (rotated, trimmed) keeps its edit in the copy
+            let source = try await Replacer.exportCurrent(item, to: folder) { fraction in
+                // Reports can arrive out of order: never step back
+                Task { @MainActor in self.update(id) { $0.downloaded = max($0.downloaded ?? 0, fraction) } }
+            }.file
+            await MainActor.run { self.update(id) { $0.downloaded = 1 } }
+            return source
+        }
+        return Download(jobId: id, folder: folder, file: file)
+    }
+
+    private func run(_ job: Job, _ download: Download) async {
+        let id = job.id
+        let folder = download.folder
+        defer { try? FileManager.default.removeItem(at: folder) }
+        update(id) { $0.phase = .downloading }
+        do {
+            let source = try await download.file.value
             let record = try await Task.detached(priority: .utility) {
-                try await Shrinker.shrink(job.item, preset: job.preset, minQuality: job.minQuality, in: folder) { phase, progress in
+                try await Shrinker.shrink(
+                    job.item, source: source, preset: job.preset, minQuality: job.minQuality, in: folder
+                ) { phase, progress in
                     Task { @MainActor in
                         // A late progress report must not undo the final state
                         self.update(id) { job in
@@ -260,11 +305,9 @@ final class Shrinker {
     // MARK: Pipeline
 
     nonisolated private static func shrink(
-        _ item: Item, preset: ShrinkPreset, minQuality: Double, in folder: URL, report: @escaping (Phase, Double) -> Void
+        _ item: Item, source: URL, preset: ShrinkPreset, minQuality: Double, in folder: URL,
+        report: @escaping (Phase, Double) -> Void
     ) async throws -> ShrinkRecord {
-        report(.downloading, 0)
-        // The video as Photos shows it, so an edited one (rotated, trimmed) keeps its edit in the copy
-        let source = try await Replacer.exportCurrent(item, to: folder) { report(.downloading, $0) }.file
         let original = try FFmpeg.probe(source)
 
         report(.encoding, 0)

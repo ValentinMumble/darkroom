@@ -36,6 +36,8 @@ final class Library {
     private(set) var subjectsProgress = 0.0
     private(set) var shrinkRecords: [String: ShrinkRecord] = ShrinkRecords.load()
     private(set) var shrinkStatus = ShrinkStatus()
+    /// Live Photos picked one by one for Remove Motion, kept across launches until it is done
+    private(set) var marked: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "MarkedForRemoveMotion") ?? [])
     private(set) var savings: [Saving] = Savings.load()
     var error: String?
 
@@ -80,6 +82,12 @@ final class Library {
         resources = nextResources
         items = loaded
         itemsById = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0) })
+        // A mark is done once its photo is gone or no longer live (its motion was removed)
+        let stillMarked = marked.filter { itemsById[$0]?.live == true }
+        if stillMarked != marked {
+            marked = stillMarked
+            saveMarks()
+        }
         shrinkStatus = ShrinkStatus(records: shrinkRecords)
         tallies = Self.tallies(loaded, shrink: shrinkStatus, lifeless: lifeless ?? [])
         state = .ready
@@ -173,6 +181,20 @@ final class Library {
         log.notice(
             "Similar: \(groups.count) groups of \(groups.reduce(0) { $0 + $1.itemIds.count }) photos in \(Date.now.timeIntervalSince(started), format: .fixed(precision: 1))s"
         )
+    }
+
+    // MARK: Marks
+
+    /// Marks the Live Photos among `targets` for Remove Motion, or unmarks them when they all are already
+    func toggleMark(_ targets: [Item]) {
+        let ids = targets.filter(\.live).map(\.id)
+        guard !ids.isEmpty else { return }
+        if ids.allSatisfy(marked.contains) { marked.subtract(ids) } else { marked.formUnion(ids) }
+        saveMarks()
+    }
+
+    private func saveMarks() {
+        UserDefaults.standard.set(Array(marked), forKey: "MarkedForRemoveMotion")
     }
 
     // MARK: People and pets

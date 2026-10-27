@@ -138,14 +138,17 @@ struct ShrinkView: View {
                 if job.phase == .encoding {
                     ProgressView(value: job.progress) { Text("Encoding, \(Int(job.progress * 100))%") }
                         .frame(maxWidth: 320)
-                } else if job.phase == .downloading && job.progress > 0 {
-                    ProgressView(value: job.progress) { Text("Downloading from iCloud, \(Int(job.progress * 100))%") }
+                } else if job.phase == .downloading, let downloaded = job.downloaded, downloaded > 0, downloaded < 1 {
+                    ProgressView(value: downloaded) { Text("Downloading from iCloud, \(Int(downloaded * 100))%") }
                         .frame(maxWidth: 320)
                 } else if let error = job.error {
                     Text(error).foregroundStyle(.red).lineLimit(3)
                 } else if let record = job.record {
                     Text(outcome(record, saved: "Copy saved to Photos"))
                         .foregroundStyle(record.copy == nil ? .secondary : .primary)
+                } else if job.phase == .queued, let downloaded = job.downloaded {
+                    Text(downloaded < 1 ? "Waiting, downloading from iCloud ahead of its turn, \(Int(downloaded * 100))%" : "Waiting, already downloaded")
+                        .foregroundStyle(.secondary)
                 } else {
                     Text(job.phase.label).foregroundStyle(.secondary)
                 }

@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var shrinkRequest: ShrinkRequest?
     @State private var replaceRequest: ReplaceRequest?
     @State private var keyMonitor: Any?
+    @State private var arrow: Arrow?
     @AppStorage("VideosNotShrunkOnly") private var notShrunkOnly = false
 
     private var current: Destination { destination ?? .videos }
@@ -74,7 +75,7 @@ struct ContentView: View {
         }
         .inspector(isPresented: $showInspector) {
             Inspector(items: selected, actions: actions)
-                .inspectorColumnWidth(min: 260, ideal: 320, max: 480)
+                .inspectorColumnWidth(min: 260, ideal: 420, max: 600)
         }
         .toolbar { toolbar }
         .searchable(text: $search, placement: .toolbar, prompt: "File name")
@@ -107,12 +108,26 @@ struct ContentView: View {
         // caught before it, except while typing in a field or with a sheet open.
         .onAppear {
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                    event.charactersIgnoringModifiers == "a", current.page == .grid,
-                    let window = NSApp.keyWindow, window.sheetParent == nil, !(window.firstResponder is NSText)
+                guard let window = NSApp.keyWindow, window.sheetParent == nil, !(window.firstResponder is NSText)
                 else { return event }
-                selection = Set(shown.map(\.id))
-                return nil
+                let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+                let key = event.charactersIgnoringModifiers
+                if modifiers == .command, key == "a", current.page == .grid {
+                    selection = Set(shown.map(\.id))
+                    return nil
+                }
+                // The arrow keys move through the grid wherever the focus is: after dragging a divider, or
+                // with the video player in the panel (which steps frames with them), the grid would miss them
+                if modifiers.isEmpty, current.page == .grid, let direction = Arrow.Direction(event.specialKey) {
+                    arrow = Arrow(direction: direction)
+                    return nil
+                }
+                // M marks the selected Live Photos for Remove Motion, or unmarks them
+                if modifiers.isEmpty, key == "m", selected.contains(where: \.live) {
+                    library.toggleMark(selected)
+                    return nil
+                }
+                return event
             }
         }
         .onDisappear { keyMonitor.map(NSEvent.removeMonitor) }
@@ -166,7 +181,7 @@ struct ContentView: View {
                     }
                     .padding(40)
                     .task { await library.findSubjects() }
-                case .grid: GridView(items: shown, selection: $selection, actions: actions)
+                case .grid: GridView(items: shown, selection: $selection, actions: actions, arrow: arrow)
                 }
             }
         }
@@ -177,6 +192,7 @@ struct ContentView: View {
         let shrinkable = selected.filter { library.shrinkSkip($0) == nil }.count
         let live = selected.filter(\.live).count
         let edited = selected.filter(Replacement.keepEdit.applies).count
+        let markedItems = library.items.filter { library.marked.contains($0.id) }
         if current == .live || current == .lifeless || (live > 0 && current != .edited && current != .rotated) {
             ToolbarItem {
                 Button {
@@ -188,6 +204,18 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(live == 0)
                 .help(live == 0 ? "Select Live Photos" : "Replace the selected Live Photos by their stills")
+            }
+        }
+        if (current == .live || current == .lifeless) && !markedItems.isEmpty {
+            ToolbarItem {
+                Button {
+                    replaceRequest = ReplaceRequest(items: markedItems, kind: .removeMotion, handPicked: true)
+                } label: {
+                    Label("Remove Motion from \(markedItems.count) Marked", systemImage: "checklist")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .help("Replace the Live Photos you marked (M) by their stills")
             }
         }
         if current == .edited || current == .rotated {

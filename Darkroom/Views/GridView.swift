@@ -1,13 +1,17 @@
 import SwiftUI
 
 /// Items as square cards. Click selects one, Cmd-click adds or removes, Shift-click selects a range,
-/// double-click opens the item in Photos, right-click shows what can be done to it.
+/// double-click opens the item in Photos, right-click shows what can be done to it, the arrow keys move.
 struct GridView: View {
     let items: [Item]
     @Binding var selection: Set<String>
     let actions: Actions
+    /// The last arrow key pressed in the window
+    var arrow: Arrow?
     @Environment(Library.self) private var library
     @State private var anchor: Int?
+    /// Cards per row, for the up and down arrows
+    @State private var columns = 1
 
     /// A right-click acts on the whole selection when the item is part of it, like in Finder
     private func targets(_ item: Item) -> [Item] {
@@ -17,6 +21,7 @@ struct GridView: View {
     /// Which video is a shrunk copy, which original has one and can go, which was tried and left as it
     /// was, and which edit only rotates
     private func mark(_ item: Item) -> String? {
+        if library.marked.contains(item.id) { return "Marked" }
         if library.shrinkStatus.copies[item.id] != nil { return "Shrunk" }
         if library.shrinkStatus.shrunk.contains(item.id) { return "Copy saved" }
         if library.shrinkStatus.kept.contains(item.id) { return "Not shrunk" }
@@ -28,17 +33,49 @@ struct GridView: View {
         if items.isEmpty {
             ContentUnavailableView("Nothing here", systemImage: "photo.on.rectangle", description: Text("No items match."))
         } else {
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 4)], spacing: 4) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        Card(item: item, selected: selection.contains(item.id), mark: mark(item))
-                            .onTapGesture { click(index) }
-                            .contextMenu { ItemMenu(items: targets(item), actions: actions) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.cardWidth), spacing: Self.spacing)], spacing: Self.spacing) {
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            Card(item: item, selected: selection.contains(item.id), mark: mark(item))
+                                .onTapGesture { click(index) }
+                                .contextMenu { ItemMenu(items: targets(item), actions: actions) }
+                        }
                     }
+                    // Only read by the arrow keys, never fed back into the layout
+                    .onGeometryChange(for: Int.self) { geometry in
+                        max(1, Int((geometry.size.width + Self.spacing) / (Self.cardWidth + Self.spacing)))
+                    } action: { count in
+                        columns = count
+                    }
+                    .padding(12)
                 }
-                .padding(12)
+                .onChange(of: arrow) {
+                    if let arrow { move(arrow.direction, proxy) }
+                }
             }
         }
+    }
+
+    private static let cardWidth: CGFloat = 150
+    private static let spacing: CGFloat = 4
+
+    /// Left and right go to the previous and next item, up and down a row, scrolling to keep it in view
+    private func move(_ direction: Arrow.Direction, _ proxy: ScrollViewProxy) {
+        let current =
+            anchor.flatMap { items.indices.contains($0) && selection.contains(items[$0].id) ? $0 : nil }
+            ?? items.firstIndex { selection.contains($0.id) }
+        let step =
+            switch direction {
+            case .left: -1
+            case .right: 1
+            case .up: -columns
+            case .down: columns
+            }
+        let next = current.map { min(max($0 + step, 0), items.count - 1) } ?? 0
+        selection = [items[next].id]
+        anchor = next
+        proxy.scrollTo(items[next].id)
     }
 
     /// A separate double-click gesture would hold every click until the double-click time ran out, and by then
@@ -60,6 +97,27 @@ struct GridView: View {
         }
         anchor = index
     }
+}
+
+/// An arrow key press, handed from the window's key handling to the grid. Each press is new, so pressing the
+/// same arrow twice moves twice.
+struct Arrow: Equatable {
+    enum Direction {
+        case left, right, up, down
+
+        init?(_ key: NSEvent.SpecialKey?) {
+            switch key {
+            case .leftArrow?: self = .left
+            case .rightArrow?: self = .right
+            case .upArrow?: self = .up
+            case .downArrow?: self = .down
+            default: return nil
+            }
+        }
+    }
+
+    let direction: Direction
+    let id = UUID()
 }
 
 struct Card: View {

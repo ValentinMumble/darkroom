@@ -4,6 +4,8 @@ struct ReplaceRequest: Identifiable {
     let id = UUID()
     let items: [Item]
     let kind: Replacement
+    /// Marked one by one: every one of them is meant to change
+    var handPicked = false
 }
 
 /// Remove Motion and Keep Edited Version: what will happen, the choices that matter, then the progress.
@@ -18,8 +20,8 @@ struct ReplaceSheet: View {
 
     init(request: ReplaceRequest) {
         self.request = request
-        // Picking only favorites means wanting them changed
-        _keepFavorites = State(initialValue: !request.items.allSatisfy(\.favorite))
+        // Marked one by one, or only favorites picked: they are meant to change
+        _keepFavorites = State(initialValue: !request.handPicked && !request.items.allSatisfy(\.favorite))
     }
 
     private var kind: Replacement { request.kind }
