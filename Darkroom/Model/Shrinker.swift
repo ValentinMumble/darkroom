@@ -1,0 +1,282 @@
+import Foundation
+import Observation
+import os
+import Photos
+
+private let log = Logger(subsystem: "com.valentinmumble.darkroom", category: "shrink")
+
+enum ShrinkPreset: String, CaseIterable, Identifiable, Codable {
+    case high, small
+
+    var id: String { rawValue }
+
+    // Measured on the library's videos: CRF 26 scores VMAF 95-96 on iPhone footage, CRF 28 scores 90-92
+    var crf: Int { self == .high ? 26 : 28 }
+    var minVMAF: Double { self == .high ? 93 : 88 }
+
+    var label: String { self == .high ? "High quality" : "Smaller files" }
+    var detail: String {
+        self == .high
+            ? "CRF 26, keeps a copy only if it scores 93 or more (hard to tell apart)"
+            : "CRF 28, keeps a copy if it scores 88 or more (slightly softer)"
+    }
+}
+
+/// What happened to one video. Saved, so the app remembers across launches which videos were shrunk.
+struct ShrinkRecord: Codable, Identifiable {
+    /// Local identifier of the original
+    let original: String
+    let name: String
+    /// Local identifier of the copy in Photos, when one was kept
+    let copy: String?
+    /// Why the original was kept as it was
+    let kept: String?
+    let before: Int64
+    let after: Int64
+    let vmaf: Double?
+    let preset: ShrinkPreset
+    let from: String
+    let to: String
+    let date: Date
+
+    var id: String { original }
+
+    /// "27 MB → 16 MB (−40%), quality 95.3"
+    var summary: String {
+        let percent = Int(((Double(after) / Double(before)) - 1) * 100)
+        let change = percent > 0 ? "+\(percent)%" : "−\(-percent)%"
+        return "\(Format.bytes(before)) → \(Format.bytes(after)) (\(change))" + (vmaf.map { ", quality \($0)" } ?? "")
+    }
+}
+
+/// The ids the sidebar and the skip rules need, taken from the saved records
+struct ShrinkStatus {
+    var shrunk: Set<String> = []
+    var copies: Set<String> = []
+    var kept: Set<String> = []
+
+    init(records: [String: ShrinkRecord] = [:]) {
+        for record in records.values {
+            if let copy = record.copy {
+                shrunk.insert(record.original)
+                copies.insert(copy)
+            } else {
+                kept.insert(record.original)
+            }
+        }
+    }
+}
+
+enum ShrinkRecords {
+    private static let file = FileManager.default.homeDirectoryForCurrentUser
+        .appending(path: "Library/Application Support/Darkroom/shrink.json")
+
+    static func load() -> [String: ShrinkRecord] {
+        guard let data = try? Data(contentsOf: file) else { return [:] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([String: ShrinkRecord].self, from: data)) ?? [:]
+    }
+
+    static func save(_ records: [String: ShrinkRecord]) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? encoder.encode(records).write(to: file)
+    }
+}
+
+/// Shrinks videos one at a time. Nothing is deleted here: the copies go into Photos next to the originals,
+/// and the Shrinking view deletes the originals when asked.
+@MainActor
+@Observable
+final class Shrinker {
+    enum Phase: String {
+        case queued, downloading, encoding, checking, importing, done, kept, failed, cancelled
+
+        var active: Bool { [.queued, .downloading, .encoding, .checking, .importing].contains(self) }
+
+        var label: String {
+            switch self {
+            case .queued: "Waiting"
+            case .downloading: "Getting the original from Photos"
+            case .encoding: "Encoding"
+            case .checking: "Checking quality"
+            case .importing: "Saving the copy to Photos"
+            case .done: "Copy saved to Photos"
+            case .kept: "Original kept"
+            case .failed: "Failed"
+            case .cancelled: "Cancelled"
+            }
+        }
+    }
+
+    struct Job: Identifiable {
+        let id = UUID()
+        let item: Item
+        let preset: ShrinkPreset
+        var phase = Phase.queued
+        var progress = 0.0
+        var record: ShrinkRecord?
+        var error: String?
+    }
+
+    /// Keep a copy only when it is at least this much smaller
+    nonisolated static let minSaving = 0.2
+
+    private(set) var jobs: [Job] = []
+    @ObservationIgnored private var worker: Task<Void, Never>?
+    private let library: Library
+
+    init(library: Library) {
+        self.library = library
+    }
+
+    var running: Int { jobs.filter(\.phase.active).count }
+
+    func enqueue(_ items: [Item], preset: ShrinkPreset) {
+        let busy = Set(jobs.filter(\.phase.active).map(\.item.id))
+        jobs += items.filter { !busy.contains($0.id) && library.shrinkSkip($0) == nil }.map { Job(item: $0, preset: preset) }
+        if worker == nil { worker = Task { await work() } }
+    }
+
+    func cancelWaiting() {
+        for index in jobs.indices where jobs[index].phase == .queued { jobs[index].phase = .cancelled }
+    }
+
+    func clearFinished() {
+        jobs.removeAll { !$0.phase.active }
+    }
+
+    private func work() async {
+        while let job = jobs.first(where: { $0.phase == .queued }) {
+            await run(job)
+        }
+        worker = nil
+    }
+
+    private func run(_ job: Job) async {
+        let id = job.id
+        let folder = FileManager.default.temporaryDirectory.appending(path: "darkroom-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let record = try await Task.detached(priority: .utility) {
+                try await Shrinker.shrink(job.item, preset: job.preset, in: folder) { phase, progress in
+                    Task { @MainActor in
+                        // A late progress report must not undo the final state
+                        self.update(id) { job in
+                            guard job.phase.active else { return }
+                            job.phase = phase
+                            job.progress = progress
+                        }
+                    }
+                }
+            }.value
+            library.saveShrinkRecord(record)
+            log.notice("Shrunk \(record.name, privacy: .public): \(record.summary, privacy: .public), \(record.kept ?? "copy saved", privacy: .public)")
+            update(id) { job in
+                job.record = record
+                job.phase = record.copy == nil ? .kept : .done
+                job.progress = 1
+            }
+        } catch {
+            log.error("Shrink failed for \(job.item.filename, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            update(id) { job in
+                job.phase = .failed
+                job.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func update(_ id: UUID, _ change: (inout Job) -> Void) {
+        if let index = jobs.firstIndex(where: { $0.id == id }) { change(&jobs[index]) }
+    }
+
+    // MARK: Pipeline
+
+    nonisolated private static func shrink(
+        _ item: Item, preset: ShrinkPreset, in folder: URL, report: @escaping (Phase, Double) -> Void
+    ) async throws -> ShrinkRecord {
+        report(.downloading, 0)
+        let source = try await exportOriginal(item.asset, to: folder)
+        let original = try FFmpeg.probe(source)
+
+        report(.encoding, 0)
+        let outputFolder = folder.appending(path: "out")
+        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
+        let output = outputFolder.appending(path: source.deletingPathExtension().lastPathComponent + ".mov")
+        try FFmpeg.encode(source, to: output, crf: preset.crf, duration: original.duration) { report(.encoding, $0) }
+        let copy = try FFmpeg.probe(output)
+        guard copy.frames == original.frames else {
+            throw FFmpeg.Failure(message: "the copy has \(copy.frames) frames instead of \(original.frames)")
+        }
+
+        let before = try fileSize(source)
+        let after = try fileSize(output)
+        func record(copy copyId: String? = nil, kept: String? = nil, vmaf: Double? = nil) -> ShrinkRecord {
+            ShrinkRecord(
+                original: item.id, name: item.filename, copy: copyId, kept: kept, before: before, after: after,
+                vmaf: vmaf, preset: preset, from: original.summary, to: copy.summary, date: .now)
+        }
+        let saving = 1 - Double(after) / Double(before)
+        if after >= before {
+            return record(kept: "the copy is \(Int((Double(after) / Double(before) - 1) * 100))% bigger")
+        }
+        if saving < minSaving {
+            return record(kept: "the copy saves only \(Int(saving * 100))%")
+        }
+
+        report(.checking, 1)
+        let score = try FFmpeg.vmaf(output, against: source)
+        if score < preset.minVMAF {
+            return record(kept: "quality \(score) is below \(Int(preset.minVMAF))", vmaf: score)
+        }
+
+        report(.importing, 1)
+        let copyId = try await importCopy(output, like: item.asset)
+        return record(copy: copyId, vmaf: score)
+    }
+
+    nonisolated private static func exportOriginal(_ asset: PHAsset, to folder: URL) async throws -> URL {
+        let resources = PHAssetResource.assetResources(for: asset)
+        guard let resource = resources.first(where: { $0.type == .video }) else {
+            throw FFmpeg.Failure(message: "no original video file")
+        }
+        let file = folder.appending(path: resource.originalFilename)
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        try await PHAssetResourceManager.default().writeData(for: resource, toFile: file, options: options)
+        return file
+    }
+
+    /// Saves the copy with the original's date, place and favorite, in the same albums
+    nonisolated private static func importCopy(_ file: URL, like original: PHAsset) async throws -> String {
+        final class Placeholder: @unchecked Sendable { var id: String? }
+        let placeholder = Placeholder()
+        let albums = PHAssetCollection.fetchAssetCollectionsContaining(original, with: .album, options: nil)
+        try await PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetCreationRequest.forAsset()
+            let options = PHAssetResourceCreationOptions()
+            options.originalFilename = file.lastPathComponent
+            request.addResource(with: .video, fileURL: file, options: options)
+            request.creationDate = original.creationDate
+            request.location = original.location
+            request.isFavorite = original.isFavorite
+            guard let created = request.placeholderForCreatedAsset else { return }
+            placeholder.id = created.localIdentifier
+            albums.enumerateObjects { album, _, _ in
+                if album.canPerform(.addContent) {
+                    PHAssetCollectionChangeRequest(for: album)?.addAssets([created] as NSArray)
+                }
+            }
+        }
+        guard let id = placeholder.id else { throw FFmpeg.Failure(message: "Photos did not save the copy") }
+        return id
+    }
+
+    nonisolated private static func fileSize(_ file: URL) throws -> Int64 {
+        (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
+    }
+}

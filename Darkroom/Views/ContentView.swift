@@ -1,0 +1,218 @@
+import SwiftUI
+
+struct ContentView: View {
+    @Environment(Library.self) private var library
+    @Environment(Shrinker.self) private var shrinker
+    // For screenshots: open --args -StartDestination similar -SelectFirst YES
+    @State private var destination: Destination? =
+        Destination(rawValue: UserDefaults.standard.string(forKey: "StartDestination") ?? "") ?? .videos
+    @State private var selection: Set<String> = []
+    @State private var sort: Sort = .biggest
+    @State private var year = 0
+    @State private var search = ""
+    @State private var showInspector = true
+    @State private var dateRequest: DateRequest?
+    @State private var shrinkRequest: ShrinkRequest?
+    @State private var replaceRequest: ReplaceRequest?
+
+    private var current: Destination { destination ?? .videos }
+
+    private var shown: [Item] {
+        let query = search.trimmingCharacters(in: .whitespaces).lowercased()
+        return library.items
+            .filter { item in
+                current.includes(item, shrink: library.shrinkStatus)
+                    && (year == 0 || Calendar.current.component(.year, from: item.date) == year)
+                    && (query.isEmpty || item.filename.lowercased().contains(query))
+            }
+            .sorted(by: sort.ordered)
+    }
+
+    private var selected: [Item] {
+        library.items.filter { selection.contains($0.id) }
+    }
+
+    private var years: [Int] {
+        let years = library.items.filter { current.includes($0, shrink: library.shrinkStatus) }
+            .map { Calendar.current.component(.year, from: $0.date) }
+        return Array(Set(years)).sorted(by: >)
+    }
+
+    private var actions: Actions {
+        Actions(
+            open: { item in
+                // AppleScript's spotlight command crashes Photos on macOS 27; this link does not
+                NSWorkspace.shared.open(URL(string: "photos-navigation://asset?uuid=\(item.uuid)")!)
+            },
+            changeDate: { items in dateRequest = DateRequest(items: items) },
+            setFavorite: { items, favorite in Task { await library.setFavorite(items, favorite) } },
+            delete: { items in Task { await library.delete(items) } },
+            shrink: { items in shrinkRequest = ShrinkRequest(items: items) },
+            replace: { items, kind in replaceRequest = ReplaceRequest(items: items, kind: kind) }
+        )
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            Sidebar(destination: $destination)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 270)
+        } detail: {
+            detail
+                .navigationTitle(current.label)
+                .navigationSubtitle(subtitle)
+                .navigationSplitViewColumnWidth(min: 480, ideal: 800)
+        }
+        .inspector(isPresented: $showInspector) {
+            Inspector(items: selected, actions: actions)
+                .inspectorColumnWidth(min: 260, ideal: 320)
+        }
+        .toolbar { toolbar }
+        .searchable(text: $search, placement: .toolbar, prompt: "File name")
+        .sheet(item: $dateRequest) { request in DateSheet(items: request.items) }
+        .sheet(item: $replaceRequest) { request in ReplaceSheet(request: request) }
+        .sheet(item: $shrinkRequest) { request in
+            ShrinkSheet(items: request.items) { items, preset in
+                shrinker.enqueue(items, preset: preset)
+                destination = .shrinking
+            }
+        }
+        .onChange(of: library.state) {
+            if library.state == .ready, selection.isEmpty, UserDefaults.standard.bool(forKey: "SelectFirst"),
+                let first = shown.first
+            {
+                selection = [first.id]
+            }
+        }
+        .onChange(of: destination) {
+            selection = []
+            year = 0
+        }
+        .alert("Photos refused the change", isPresented: errorShown) {
+            Button("OK") { library.error = nil }
+        } message: {
+            Text(library.error ?? "")
+        }
+        .task { await library.start() }
+        // Free space changes with anything stored in iCloud: read it again every minute and on coming back
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                await library.refreshStorage()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await library.refreshStorage() }
+        }
+    }
+
+    private var errorShown: Binding<Bool> {
+        Binding(get: { library.error != nil }, set: { if !$0 { library.error = nil } })
+    }
+
+    private var subtitle: String {
+        guard library.state == .ready, current.page == .grid else { return "" }
+        let items = shown
+        return "\(Format.count(items.count, "item")), \(Format.bytes(items.reduce(0) { $0 + $1.size }))"
+    }
+
+    @ViewBuilder private var detail: some View {
+        switch library.state {
+        case .starting:
+            ProgressView()
+        case .denied:
+            ContentUnavailableView(
+                "No access to Photos", systemImage: "lock",
+                description: Text("Allow Darkroom in System Settings › Privacy & Security › Photos, then open it again."))
+        case .loading(let done, let total):
+            ProgressView(value: Double(done), total: Double(max(total, 1))) {
+                Text("Reading \(total.formatted()) items from Photos…")
+            }
+            .padding(40)
+        case .ready:
+            VStack(alignment: .leading, spacing: 0) {
+                Text(current.hint)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                switch current.page {
+                case .groups: GroupsView(selection: $selection, actions: actions)
+                case .shrinking: ShrinkView(actions: actions)
+                case .grid: GridView(items: shown, selection: $selection, actions: actions)
+                }
+            }
+        }
+    }
+
+    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        let videos = selected.filter { $0.kind == .video }.count
+        let live = selected.filter(\.live).count
+        let edited = selected.filter(\.edited).count
+        if current == .live || (live > 0 && current != .edited) {
+            ToolbarItem {
+                Button {
+                    actions.replace(selected, .removeMotion)
+                } label: {
+                    Label(live == 0 ? "Remove Motion" : "Remove Motion from \(live)", systemImage: "livephoto.slash")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(live == 0)
+                .help(live == 0 ? "Select Live Photos" : "Replace the selected Live Photos by their stills")
+            }
+        }
+        if current == .edited {
+            ToolbarItem {
+                Button {
+                    actions.replace(selected, .keepEdit)
+                } label: {
+                    Label(edited == 0 ? "Keep Edited Version" : "Keep Edited Version of \(edited)", systemImage: "wand.and.stars")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(edited == 0)
+                .help(edited == 0 ? "Select edited items" : "Replace the selected items by their edited version alone")
+            }
+        }
+        if current == .shrinkable || (videos > 0 && current != .live && current != .edited) {
+            ToolbarItem {
+                Button {
+                    actions.shrink(selected)
+                } label: {
+                    Label(videos == 0 ? "Shrink" : "Shrink \(Format.count(videos, "Video"))", systemImage: "arrow.down.right.and.arrow.up.left")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(videos == 0)
+                .help(videos == 0 ? "Select videos to shrink" : "Shrink the selected videos")
+            }
+        }
+        ToolbarItemGroup {
+            if current.page == .grid {
+                Picker("Sort", selection: $sort) {
+                    ForEach(Sort.allCases) { Text($0.label).tag($0) }
+                }
+                Picker("Year", selection: $year) {
+                    Text("All Years").tag(0)
+                    ForEach(years, id: \.self) { Text(String($0)).tag($0) }
+                }
+                Button("Select All", systemImage: "checkmark.circle") { selection = Set(shown.map(\.id)) }
+                    .help("Select every item shown")
+            }
+        }
+        ToolbarItemGroup {
+            let favorite = !selected.isEmpty && selected.allSatisfy(\.favorite)
+            Button("Favorite", systemImage: favorite ? "heart.fill" : "heart") {
+                actions.setFavorite(selected, !favorite)
+            }
+            .disabled(selected.isEmpty)
+            Button("Change Date", systemImage: "calendar") { actions.changeDate(selected) }
+                .disabled(selected.isEmpty)
+            Button("Open in Photos", systemImage: "arrow.up.forward.app") { selected.first.map(actions.open) }
+                .disabled(selected.count != 1)
+            Button("Delete", systemImage: "trash") { actions.delete(selected) }
+                .disabled(selected.isEmpty)
+                .keyboardShortcut(.delete, modifiers: .command)
+            Button("Details", systemImage: "info.circle") { showInspector.toggle() }
+        }
+    }
+}
