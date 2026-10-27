@@ -97,7 +97,7 @@ libvmaf. Everything else works without it.
   "Smaller files", every frame kept at its original time), then scored with VMAF against the original
   (100 = identical). VMAF pairs frames by index: iPhone videos have an uneven frame rate, and pairing them by
   timestamp scores a perfect copy around 45. The copy goes into Photos only when it is at least 20% smaller
-  and scores 93 or more (88 for "Smaller files"); the originals go when you press Delete Originals. A copy
+  and scores 93 or more (88 for "Smaller files"; the Shrink window changes that bar, remembered per preset); the originals go when you press Delete Originals. A copy
   refused only for its score waits in `~/Library/Caches/Darkroom/Previews`: the Shrinking view plays it and
   the original in one player that switches between the two at the same moment, and saves it anyway if it
   looks fine. Apple's

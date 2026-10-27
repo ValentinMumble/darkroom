@@ -11,6 +11,7 @@ struct ShrinkSheet: View {
     @Environment(Library.self) private var library
     @Environment(\.dismiss) private var dismiss
     @State private var preset = ShrinkPreset.high
+    @State private var minQuality = ShrinkPreset.high.minQuality
 
     var body: some View {
         let eligible = items.filter { library.shrinkSkip($0) == nil }
@@ -42,6 +43,17 @@ struct ShrinkSheet: View {
                 }
             }
             .pickerStyle(.radioGroup)
+            .onChange(of: preset) { minQuality = preset.minQuality }
+            VStack(alignment: .leading, spacing: 4) {
+                Stepper(value: $minQuality, in: 70...99, step: 1) {
+                    Text("Keep a copy only if it scores at least \(Int(minQuality))")
+                }
+                Text(
+                    "Out of 100. Around 93 the copy is hard to tell apart, around 88 slightly softer. Copies below it wait in Shrinking, where you can compare them and save them anyway. Remembered for \(preset.label)\(minQuality == preset.defaultMinQuality ? "" : " (default \(Int(preset.defaultMinQuality)))")."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
             if !skipped.isEmpty {
                 Text("Left out: " + skipped.joined(separator: "; ")).font(.caption).foregroundStyle(.secondary)
             }
@@ -49,6 +61,8 @@ struct ShrinkSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Start") {
+                    // Saved first: each job reads it when queued
+                    preset.minQuality = minQuality
                     onStart(eligible, preset)
                     dismiss()
                 }

@@ -12,14 +12,18 @@ enum ShrinkPreset: String, CaseIterable, Identifiable, Codable {
 
     // Measured on the library's videos: CRF 26 scores VMAF 95-96 on iPhone footage, CRF 28 scores 90-92
     var crf: Int { self == .high ? 26 : 28 }
-    var minVMAF: Double { self == .high ? 93 : 88 }
+    var defaultMinQuality: Double { self == .high ? 93 : 88 }
+
+    /// The score a copy needs to be kept: the default, or what was last set in the Shrink window
+    var minQuality: Double {
+        get { UserDefaults.standard.object(forKey: minQualityKey) as? Double ?? defaultMinQuality }
+        nonmutating set { UserDefaults.standard.set(newValue, forKey: minQualityKey) }
+    }
+
+    private var minQualityKey: String { "MinQuality.\(rawValue)" }
 
     var label: String { self == .high ? "High quality" : "Smaller files" }
-    var detail: String {
-        self == .high
-            ? "CRF 26, keeps a copy only if it scores 93 or more (hard to tell apart)"
-            : "CRF 28, keeps a copy if it scores 88 or more (slightly softer)"
-    }
+    var detail: String { self == .high ? "CRF 26, hard to tell apart" : "CRF 28, slightly softer" }
 }
 
 /// What happened to one video. Saved, so the app remembers across launches which videos were shrunk.
@@ -34,6 +38,8 @@ struct ShrinkRecord: Codable, Identifiable {
     let before: Int64
     let after: Int64
     let vmaf: Double?
+    /// The score the copy needed, as set when it was made: missing from older records
+    let minQuality: Double?
     let preset: ShrinkPreset
     let from: String
     let to: String
@@ -52,6 +58,8 @@ struct ShrinkRecord: Codable, Identifiable {
     var summary: String {
         sizes + (vmaf.map { ", quality \($0)" } ?? "")
     }
+
+    var requiredQuality: Double { minQuality ?? preset.defaultMinQuality }
 
     /// No copy was saved only because of the quality score, so one can be saved anyway
     var refusedForQuality: Bool { copy == nil && vmaf != nil }
@@ -143,6 +151,8 @@ final class Shrinker {
         let id = UUID()
         let item: Item
         let preset: ShrinkPreset
+        /// Read when the job is queued, so changing the setting later leaves it alone
+        let minQuality: Double
         var phase = Phase.queued
         var progress = 0.0
         var record: ShrinkRecord?
@@ -164,7 +174,7 @@ final class Shrinker {
 
     func enqueue(_ items: [Item], preset: ShrinkPreset) {
         let busy = Set(jobs.filter(\.phase.active).map(\.item.id))
-        jobs += items.filter { !busy.contains($0.id) && library.shrinkSkip($0) == nil }.map { Job(item: $0, preset: preset) }
+        jobs += items.filter { !busy.contains($0.id) && library.shrinkSkip($0) == nil }.map { Job(item: $0, preset: preset, minQuality: preset.minQuality) }
         if worker == nil { worker = Task { await work() } }
     }
 
@@ -190,7 +200,7 @@ final class Shrinker {
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let record = try await Task.detached(priority: .utility) {
-                try await Shrinker.shrink(job.item, preset: job.preset, in: folder) { phase, progress in
+                try await Shrinker.shrink(job.item, preset: job.preset, minQuality: job.minQuality, in: folder) { phase, progress in
                     Task { @MainActor in
                         // A late progress report must not undo the final state
                         self.update(id) { job in
@@ -226,7 +236,7 @@ final class Shrinker {
         library.saveShrinkRecord(
             ShrinkRecord(
                 original: record.original, name: record.name, copy: copyId, kept: nil, before: record.before,
-                after: record.after, vmaf: record.vmaf, preset: record.preset, from: record.from, to: record.to,
+                after: record.after, vmaf: record.vmaf, minQuality: record.minQuality, preset: record.preset, from: record.from, to: record.to,
                 date: .now))
         ShrinkRecords.discardPreview(record)
         log.notice("Saved \(record.name, privacy: .public) anyway: \(record.summary, privacy: .public)")
@@ -239,7 +249,7 @@ final class Shrinker {
     // MARK: Pipeline
 
     nonisolated private static func shrink(
-        _ item: Item, preset: ShrinkPreset, in folder: URL, report: @escaping (Phase, Double) -> Void
+        _ item: Item, preset: ShrinkPreset, minQuality: Double, in folder: URL, report: @escaping (Phase, Double) -> Void
     ) async throws -> ShrinkRecord {
         report(.downloading, 0)
         // The video as Photos shows it, so an edited one (rotated, trimmed) keeps its edit in the copy
@@ -261,7 +271,7 @@ final class Shrinker {
         func record(copy copyId: String? = nil, kept: String? = nil, vmaf: Double? = nil) -> ShrinkRecord {
             ShrinkRecord(
                 original: item.id, name: item.filename, copy: copyId, kept: kept, before: before, after: after,
-                vmaf: vmaf, preset: preset, from: original.summary, to: copy.summary, date: .now)
+                vmaf: vmaf, minQuality: minQuality, preset: preset, from: original.summary, to: copy.summary, date: .now)
         }
         let saving = 1 - Double(after) / Double(before)
         if after >= before {
@@ -273,13 +283,13 @@ final class Shrinker {
 
         report(.checking, 1)
         let score = try FFmpeg.vmaf(output, against: source)
-        if score < preset.minVMAF {
+        if score < minQuality {
             // Kept aside, so it can be compared with the original and saved anyway
             let preview = ShrinkRecords.preview(original: item.id, name: item.filename)
             try? FileManager.default.removeItem(at: preview.deletingLastPathComponent())
             try FileManager.default.createDirectory(at: preview.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: output, to: preview)
-            return record(kept: "the copy would look softer (quality \(score), below \(Int(preset.minVMAF)))", vmaf: score)
+            return record(kept: "the copy would look softer (quality \(score), below \(Int(minQuality)))", vmaf: score)
         }
 
         report(.importing, 1)

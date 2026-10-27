@@ -26,7 +26,7 @@ struct CompareSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("\(record.name): original or copy?").font(.title2.weight(.semibold))
             Text(
-                "The copy is \(record.sizes) and scored \(record.vmaf.map { "\($0)" } ?? "?") on the quality check, below \(Int(record.preset.minVMAF)). Pause on a frame and switch between the two: the difference shows first in fine detail like grass, leaves, hair or water."
+                "The copy is \(record.sizes) and scored \(record.vmaf.map { "\($0)" } ?? "?") on the quality check, below \(Int(record.requiredQuality)). Pause on a frame and switch between the two: the difference shows first in fine detail like grass, leaves, hair or water."
             )
             .foregroundStyle(.secondary)
             Picker("Show", selection: $showCopy) {
