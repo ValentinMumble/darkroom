@@ -17,7 +17,7 @@ struct ShrinkSheet: View {
         let skipped = items.compactMap { item in library.shrinkSkip(item).map { "\(item.filename): \($0)" } }
         let minutes = eligible.reduce(0) { $0 + $1.duration } / 60
         VStack(alignment: .leading, spacing: 14) {
-            Text("Shrink \(Format.count(eligible.count, "video")) (\(Format.bytes(eligible.reduce(0) { $0 + $1.size })))")
+            Text(eligible.isEmpty ? "Nothing to shrink" : "Shrink \(Format.count(eligible.count, "video")) (\(Format.bytes(eligible.reduce(0) { $0 + $1.size })))")
                 .font(.title2.weight(.semibold))
             Text(
                 "Each video is downloaded from iCloud if needed, re-encoded to HEVC with ffmpeg, then scored for quality (VMAF, 100 = identical). The copy goes into Photos with the same date, place, favorite and albums, only when it is at least 20% smaller and good enough. Count about 2 to 3 times the length of the videos: here roughly \(max(1, Int(minutes * 2.5))) minutes."
@@ -26,6 +26,12 @@ struct ShrinkSheet: View {
                 "Nothing is deleted: the originals stay until you delete them from Shrinking. Until then the copies take extra iCloud space\(library.storage?.free.map { " (\(Format.bytes($0)) free now)" } ?? "")."
             )
             .foregroundStyle(.secondary)
+            if eligible.contains(where: \.edited) {
+                Text(
+                    "Edited videos (rotated, trimmed…) are shrunk as they look now: the copy keeps the edit, which can no longer be undone. Photos stores an edited video twice, so deleting its original frees both."
+                )
+                .foregroundStyle(.secondary)
+            }
             if FFmpeg.ffmpeg == nil {
                 Label("Needs ffmpeg. Install it with brew install ffmpeg, then try again.", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)

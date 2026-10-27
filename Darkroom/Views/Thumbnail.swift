@@ -6,6 +6,8 @@ struct Thumbnail: View {
     let asset: PHAsset
     var pixels: CGFloat = 320
     var fit = false
+    /// The picture as taken, before any edit
+    var original = false
     @State private var image: NSImage?
     /// For screenshots of the app: `defaults write com.valentinmumble.darkroom BlurPhotos -bool YES`
     @AppStorage("BlurPhotos") private var blurPhotos = false
@@ -21,8 +23,8 @@ struct Thumbnail: View {
                 Rectangle().fill(.quaternary)
             }
         }
-        .task(id: "\(asset.localIdentifier)-\(pixels)") {
-            for await next in Thumbnails.images(for: asset, pixels: pixels, fill: !fit) {
+        .task(id: "\(asset.localIdentifier)-\(pixels)-\(original)") {
+            for await next in Thumbnails.images(for: asset, pixels: pixels, fill: !fit, original: original) {
                 image = next
             }
         }
@@ -33,9 +35,10 @@ enum Thumbnails {
     static let manager = PHCachingImageManager()
 
     /// A quick low-resolution image first, then the sharp one
-    static func images(for asset: PHAsset, pixels: CGFloat, fill: Bool) -> AsyncStream<NSImage> {
+    static func images(for asset: PHAsset, pixels: CGFloat, fill: Bool, original: Bool = false) -> AsyncStream<NSImage> {
         AsyncStream { continuation in
             let options = PHImageRequestOptions()
+            options.version = original ? .original : .current
             options.deliveryMode = .opportunistic
             options.resizeMode = .fast
             options.isNetworkAccessAllowed = true

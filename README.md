@@ -29,16 +29,18 @@ Darkroom counts every file iCloud stores for an item, so the sizes it shows add 
 | Videos, Photos | everything, biggest first, with the size iCloud really stores |
 | Duplicates & Similar | exact copies first, which can all go in one click; then photos taken less than a minute apart that look alike, with the best one picked to keep |
 | Live Photos | **Remove Motion**: each one becomes a still, with its edit, the same date, place, favorite and albums |
-| Edited | **Keep Edited Version**: the edited version alone replaces the item, and the original under it goes |
+| Edited | **Keep Edited Version**: the edited version alone replaces the item, and the original under it goes; a Live Photo stays live, with its edited motion |
+| Only Rotated | edits that only rotate an item (or change nothing), where the original is a full extra copy: same Keep Edited Version |
 | Screenshots | rarely worth keeping for long |
-| Videos to Shrink, Shrinking | re-encodes videos to a smaller file, keeping a copy only when it looks the same |
+| Shrinking | re-encodes the videos you pick in Videos to a smaller file, keeping a copy only when it looks the same |
 | Favorites | what the name says |
 
 ![Duplicates & Similar](docs/duplicates-similar.png)
 
 Select items (click, Cmd-click, Shift-click, or right-click) to delete them, add them to Favorites, change
 their date or open them in Photos (double-click does that too). Deleted items stay in Recently Deleted for
-30 days, where they still count against iCloud: empty it in Photos to free the space.
+30 days, where you can get them back. iCloud seems to free their space right away: on the library this was
+built on, the free space rose as soon as items were deleted, while they were still in Recently Deleted.
 
 Changing dates: move a set so the earliest gets a date and the others keep their spacing, set an exact
 date, shift by an amount, or read the date from the file name (`%Y%m%d_%H%M%S` reads
@@ -73,21 +75,32 @@ libvmaf. Everything else works without it.
   only now and then, so the sidebar also shows what was freed since, and a running total of what Darkroom
   itself freed, kept across launches in `~/Library/Application Support/Darkroom/savings.json`. iCloud counts in powers of 1024
   (37,472,142,715 bytes show as "34.9 GB"), so the app does too.
+- **Recently Deleted**: PhotoKit never shows deleted items to other apps, even through its private options, so
+  Darkroom reads their count and size from Photos' own database, read-only. macOS allows that only with Full
+  Disk Access; without it, the sidebar offers to open the setting.
 - **Similar shots** compare a 64-bit difference hash of a small render: one bit per pixel of a 9x8 grey
   thumbnail, set when it is brighter than its right neighbour. On a 7,000-item library, shots of the same
   moment differed by up to about 16 bits, different scenes by 20 to 40, even 3 seconds apart. Vision's
   feature print was measured too and dropped: it calls two framings of the same view "very close", and
   those are both worth keeping. The keeper is a favorite or edited shot first, then the best Vision
   aesthetics score.
+- **Only Rotated** reads the edit Photos saves with each item: a property list around compressed JSON, whose
+  adjustments (crop, light, filters…) can each be switched off. A rotation is kept apart from them, so an edit
+  with every adjustment off only rotates, or changes nothing.
 - **Remove Motion and Keep Edited Version** ask Photos for the item as it looks now (an unedited photo comes
   back as its original file, not re-encoded), save it as a new item with the same date, place, favorite and
   albums, and delete the old one in the same change. macOS asks once per batch of 200, and a batch you refuse
-  leaves nothing behind.
-- **Shrinking videos**: each video is exported from Photos, re-encoded with libx265 (CRF 26, or 28 for
+  leaves nothing behind. Keep Edited Version saves an edited Live Photo's rendered still and motion
+  together: Photos writes the same pairing id in both, so the new item is a Live Photo again.
+- **Shrinking videos**: each video is exported from Photos as it looks now (a rotated or trimmed video keeps
+  its edit; Photos stores those twice, so deleting the original frees both), re-encoded with libx265 (CRF 26, or 28 for
   "Smaller files", every frame kept at its original time), then scored with VMAF against the original
   (100 = identical). VMAF pairs frames by index: iPhone videos have an uneven frame rate, and pairing them by
   timestamp scores a perfect copy around 45. The copy goes into Photos only when it is at least 20% smaller
-  and scores 93 or more (88 for "Smaller files"); the originals go when you press Delete Originals. Apple's
+  and scores 93 or more (88 for "Smaller files"); the originals go when you press Delete Originals. A copy
+  refused only for its score waits in `~/Library/Caches/Darkroom/Previews`: the Shrinking view plays it and
+  the original in one player that switches between the two at the same moment, and saves it anyway if it
+  looks fine. Apple's
   own HEVC encoder was tried and made iPhone videos bigger at the same quality. Expect savings on some videos
   only: iPhone footage is already well compressed.
 - **Open in Photos** uses a `photos-navigation://asset?uuid=` link. AppleScript's `spotlight` command

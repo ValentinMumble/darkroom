@@ -1,5 +1,6 @@
 import AVKit
 import Photos
+import PhotosUI
 import SwiftUI
 
 /// The right-hand panel: details of the selected item, or a summary of the selection.
@@ -9,7 +10,8 @@ struct Inspector: View {
 
     var body: some View {
         if let item = items.first, items.count == 1 {
-            ItemDetail(item: item, actions: actions)
+            // A new item starts on its edited version
+            ItemDetail(item: item, actions: actions).id(item.id)
         } else if items.isEmpty {
             ContentUnavailableView(
                 "Nothing selected", systemImage: "photo",
@@ -54,7 +56,7 @@ struct ItemMenu: View {
         if items.contains(where: \.live) {
             Button("Remove Motion…") { actions.replace(items, .removeMotion) }
         }
-        if items.contains(where: \.edited) {
+        if items.contains(where: Replacement.keepEdit.applies) {
             Button("Keep Edited Version Only…") { actions.replace(items, .keepEdit) }
         }
         Divider()
@@ -82,10 +84,14 @@ struct ActionButtons: View {
                 Button("Shrink…", systemImage: "arrow.down.right.and.arrow.up.left") { actions.shrink(items) }
             }
             if items.contains(where: \.live) {
-                Button("Remove Motion…", systemImage: "livephoto.slash") { actions.replace(items, .removeMotion) }
+                Button("Remove Motion (−\(Format.bytes(Replacement.removeMotion.saving(of: items))))…", systemImage: "livephoto.slash") {
+                    actions.replace(items, .removeMotion)
+                }
             }
-            if items.contains(where: \.edited) {
-                Button("Keep Edited Version Only…", systemImage: "wand.and.stars") { actions.replace(items, .keepEdit) }
+            if items.contains(where: Replacement.keepEdit.applies) {
+                Button("Keep Edited Version Only (−\(Format.bytes(Replacement.keepEdit.saving(of: items))))…", systemImage: "wand.and.stars") {
+                    actions.replace(items, .keepEdit)
+                }
             }
             Button("Delete…", systemImage: "trash", role: .destructive) { actions.delete(items) }
         }
@@ -96,22 +102,47 @@ struct ActionButtons: View {
 struct ItemDetail: View {
     let item: Item
     let actions: Actions
+    @Environment(Library.self) private var library
     @AppStorage("BlurPhotos") private var blurPhotos = false
+    @State private var showOriginal = false
+
+    /// The shrink result, seen from this video: the original or its copy
+    private func shrinkFact(_ record: ShrinkRecord) -> String {
+        if record.copy == item.id { return "copy of \(record.name), \(record.summary)" }
+        if record.copy != nil {
+            return "a copy is saved, \(record.summary). Delete this original from Shrinking to free the space"
+        }
+        return "no, \(record.kept ?? "no copy saved")"
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Group {
                     if item.kind == .video {
-                        VideoPreview(asset: item.asset)
+                        VideoPreview(asset: item.asset, original: showOriginal)
+                    } else if item.live {
+                        LivePhotoPreview(asset: item.asset, original: showOriginal)
                     } else {
-                        Thumbnail(asset: item.asset, pixels: 1200, fit: true)
+                        Thumbnail(asset: item.asset, pixels: 1200, fit: true, original: showOriginal)
                     }
                 }
-                .frame(height: 260)
-                .frame(maxWidth: .infinity)
+                // The item's own shape at the panel's width, so a portrait video is not a strip in a wide box; the
+                // height follows the width and never the other way, so resizing the panel settles
+                .aspectRatio(item.height > 0 ? CGFloat(item.width) / CGFloat(item.height) : 1, contentMode: .fit)
+                .frame(maxWidth: .infinity, maxHeight: 560)
                 .background(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                // Photos keeps two versions of an edited item: the original and the latest edit
+                if item.edited {
+                    Picker("Version", selection: $showOriginal) {
+                        Text("Edited" + (item.editedSize > 0 ? " · \(Format.bytes(item.editedSize))" : "")).tag(false)
+                        Text("Original · \(Format.bytes(item.originalSize))").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
 
                 Text(item.filename).font(.headline).textSelection(.enabled)
 
@@ -125,8 +156,18 @@ struct ItemDetail: View {
                             Fact("Bitrate", String(format: "%.1f Mbps", Double(item.originalSize) * 8 / 1e6 / item.duration))
                         }
                     }
-                    if item.edited { Fact("Edited", "yes, iCloud keeps both versions") }
-                    if item.live { Fact("Live Photo", "yes, with a few seconds of video") }
+                    if item.edited {
+                        Fact("Edited", item.onlyRotated
+                                ? "only rotated, or not changed at all: the original is a full extra copy"
+                                : item.editedSize > 0 ? "yes, iCloud keeps both versions" : "yes, as a setting Photos applies when showing it, with no second file")
+                    }
+                    if item.live { Fact("Live Photo", "yes, \(Format.bytes(item.motionSize)) of motion. Point at the photo to play it") }
+                    // An edited Live Photo can do both: Remove Motion frees more, Keep Edited Version keeps it live
+                    let choices = [Replacement.removeMotion, .keepEdit].filter { $0.applies(to: item) && $0.saving(item) > 0 }
+                    if !choices.isEmpty {
+                        Fact("Could free", choices.map { "\(Format.bytes($0.saving(item))) with \($0.title)" }.joined(separator: ", or "))
+                    }
+                    if let record = library.shrinkRecord(item) { Fact("Shrunk", shrinkFact(record)) }
                     if let location = item.location, !blurPhotos {
                         GridRow {
                             Text("Place").foregroundStyle(.secondary)
@@ -166,6 +207,8 @@ private struct Fact: View {
 /// Plays a video, streaming it from iCloud when it is not on this Mac.
 struct VideoPreview: View {
     let asset: PHAsset
+    /// The video as filmed, before any edit
+    var original = false
     @State private var player: AVPlayer?
     @AppStorage("BlurPhotos") private var blurPhotos = false
 
@@ -177,41 +220,113 @@ struct VideoPreview: View {
                 Thumbnail(asset: asset, pixels: 1200, fit: true)
             }
         }
-        .task(id: asset.localIdentifier) {
+        .task(id: "\(asset.localIdentifier)-\(original)") {
             player = nil
-            player = await load()
+            player = await Self.player(for: asset, original: original)
         }
     }
 
-    /// AVKit's own player view. SwiftUI's VideoPlayer crashes on macOS 27: nothing else references AVKit,
-    /// so the framework is never loaded and its player class cannot be found at runtime.
-    private struct PlayerView: NSViewRepresentable {
-        let player: AVPlayer
-
-        func makeNSView(context: Context) -> AVPlayerView {
-            let view = AVPlayerView()
-            view.controlsStyle = .inline
-            view.player = player
-            return view
-        }
-
-        func updateNSView(_ view: AVPlayerView, context: Context) {
-            view.player = player
-        }
-
-        static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
-            view.player?.pause()
-        }
-    }
-
-    private func load() async -> AVPlayer? {
+    /// `.automatic` may stream a lighter version; `.highQualityFormat` waits for the full one
+    static func player(
+        for asset: PHAsset, deliveryMode: PHVideoRequestOptionsDeliveryMode = .automatic, original: Bool = false
+    ) async -> AVPlayer? {
         await withCheckedContinuation { continuation in
             let options = PHVideoRequestOptions()
             options.isNetworkAccessAllowed = true
-            options.deliveryMode = .automatic
+            options.deliveryMode = deliveryMode
+            options.version = original ? .original : .current
             PHImageManager.default().requestPlayerItem(forVideo: asset, options: options) { item, _ in
                 continuation.resume(returning: item.map(AVPlayer.init(playerItem:)))
             }
         }
+    }
+}
+
+/// A Live Photo that plays its motion, with sound, while the pointer is over it, like in Photos.
+struct LivePhotoPreview: View {
+    let asset: PHAsset
+    /// The Live Photo as taken, before any edit
+    var original = false
+    @State private var livePhoto: PHLivePhoto?
+    @State private var playing = false
+    @AppStorage("BlurPhotos") private var blurPhotos = false
+
+    var body: some View {
+        Group {
+            if let livePhoto, !blurPhotos {
+                LivePhotoView(livePhoto: livePhoto, playing: playing)
+                    .overlay(alignment: .topLeading) { Pill(text: playing ? "LIVE ▶︎" : "LIVE") }
+                    .onHover { playing = $0 }
+            } else {
+                Thumbnail(asset: asset, pixels: 1200, fit: true)
+            }
+        }
+        .task(id: "\(asset.localIdentifier)-\(original)") {
+            livePhoto = nil
+            livePhoto = await load()
+        }
+    }
+
+    private func load() async -> PHLivePhoto? {
+        await withCheckedContinuation { continuation in
+            let options = PHLivePhotoRequestOptions()
+            options.isNetworkAccessAllowed = true
+            options.version = original ? .original : .current
+            // Called once, with the full version only
+            options.deliveryMode = .highQualityFormat
+            PHImageManager.default().requestLivePhoto(
+                for: asset, targetSize: CGSize(width: 1200, height: 1200), contentMode: .aspectFit, options: options
+            ) { livePhoto, _ in
+                continuation.resume(returning: livePhoto)
+            }
+        }
+    }
+
+    private struct LivePhotoView: NSViewRepresentable {
+        let livePhoto: PHLivePhoto
+        let playing: Bool
+
+        final class Coordinator {
+            var playing = false
+        }
+
+        func makeCoordinator() -> Coordinator { Coordinator() }
+
+        func makeNSView(context: Context) -> PHLivePhotoView {
+            let view = PHLivePhotoView()
+            view.contentMode = .aspectFit
+            view.livePhoto = livePhoto
+            return view
+        }
+
+        func updateNSView(_ view: PHLivePhotoView, context: Context) {
+            if view.livePhoto !== livePhoto { view.livePhoto = livePhoto }
+            // Only on a change: starting again on every update would restart the motion
+            guard context.coordinator.playing != playing else { return }
+            context.coordinator.playing = playing
+            if playing { view.startPlayback(with: .full) } else { view.stopPlayback() }
+        }
+    }
+}
+
+/// AVKit's own player view. SwiftUI's VideoPlayer crashes on macOS 27: nothing else references AVKit,
+/// so the framework is never loaded and its player class cannot be found at runtime.
+struct PlayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.showsFullScreenToggleButton = true
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        view.player = player
+    }
+
+    static func dismantleNSView(_ view: AVPlayerView, coordinator: ()) {
+        view.player?.pause()
     }
 }

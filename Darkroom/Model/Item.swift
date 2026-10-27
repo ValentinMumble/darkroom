@@ -15,11 +15,14 @@ struct Item: Identifiable, Hashable {
     let originalSize: Int64
     let editedSize: Int64
     let motionSize: Int64
+    /// A Live Photo's motion as Photos plays it: the edited clip, or the original one
+    let currentMotionSize: Int64
     let width: Int
     let height: Int
     let duration: TimeInterval
     let favorite: Bool
     let edited: Bool
+    let onlyRotated: Bool
     let screenshot: Bool
     let live: Bool
     let slowMotion: Bool
@@ -35,11 +38,14 @@ struct Item: Identifiable, Hashable {
         originalSize = resources.originalSize
         editedSize = resources.editedSize
         motionSize = resources.motionSize
+        currentMotionSize = resources.editedMotionSize > 0 ? resources.editedMotionSize : resources.originalMotionSize
         width = asset.pixelWidth
         height = asset.pixelHeight
         duration = asset.duration
         favorite = asset.isFavorite
         edited = resources.edited
+        // Without a rendered version there is no extra copy to free
+        onlyRotated = resources.onlyRotated && resources.editedSize > 0
         screenshot = asset.mediaSubtypes.contains(.photoScreenshot)
         live = asset.mediaSubtypes.contains(.photoLive)
         slowMotion = asset.mediaSubtypes.contains(.videoHighFrameRate)
@@ -74,7 +80,12 @@ struct Resources {
     let editedSize: Int64
     /// A Live Photo's motion clips: the original and, after an edit, the re-rendered one
     let motionSize: Int64
+    let originalMotionSize: Int64
+    let editedMotionSize: Int64
     let edited: Bool
+    /// The edit only rotates the item, or changes nothing: the edited version holds everything, and the
+    /// original under it is a full extra copy
+    let onlyRotated: Bool
 
     init(asset: PHAsset) {
         let resources = PHAssetResource.assetResources(for: asset)
@@ -83,7 +94,10 @@ struct Resources {
         var originalSize: Int64 = 0
         var editedSize: Int64 = 0
         var motionSize: Int64 = 0
+        var originalMotionSize: Int64 = 0
+        var editedMotionSize: Int64 = 0
         var edited = false
+        var onlyRotated = false
         for resource in resources {
             // Not public API, but the only way to know a resource's size without downloading it
             let bytes = (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value ?? 0
@@ -99,7 +113,14 @@ struct Resources {
                 editedSize += bytes
             case .adjustmentData:
                 edited = true
-            case .pairedVideo, .fullSizePairedVideo, .adjustmentBasePairedVideo:
+                onlyRotated = Self.onlyRotates(resource)
+            case .pairedVideo:
+                motionSize += bytes
+                originalMotionSize += bytes
+            case .fullSizePairedVideo:
+                motionSize += bytes
+                editedMotionSize += bytes
+            case .adjustmentBasePairedVideo:
                 motionSize += bytes
             default:
                 break
@@ -110,6 +131,39 @@ struct Resources {
         self.originalSize = originalSize
         self.editedSize = editedSize
         self.motionSize = motionSize
+        self.originalMotionSize = originalMotionSize
+        self.editedMotionSize = editedMotionSize
         self.edited = edited
+        self.onlyRotated = onlyRotated
+    }
+
+    /// Photos saves an edit as a property list around compressed JSON, whose adjustments (crop, light,
+    /// filters…) can each be switched off. A rotation is kept apart from them, so an edit with every
+    /// adjustment off only rotates, or changes nothing.
+    private static func onlyRotates(_ resource: PHAssetResource) -> Bool {
+        guard let data = read(resource),
+            let plist = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
+            plist["adjustmentFormatIdentifier"] as? String == "com.apple.photo",
+            let packed = plist["adjustmentData"] as? Data,
+            let unpacked = try? (packed as NSData).decompressed(using: .zlib) as Data,
+            let edit = (try? JSONSerialization.jsonObject(with: unpacked)) as? [String: Any]
+        else { return false }
+        let adjustments = edit["adjustments"] as? [[String: Any]] ?? []
+        return adjustments.allSatisfy { ($0["enabled"] as? Bool) == false }
+    }
+
+    /// Waits for a small resource's bytes. Only called while the library loads, off the main thread.
+    private static func read(_ resource: PHAssetResource) -> Data? {
+        final class Buffer: @unchecked Sendable { var data = Data() }
+        let buffer = Buffer()
+        let done = DispatchSemaphore(value: 0)
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        PHAssetResourceManager.default().requestData(for: resource, options: options) { chunk in
+            buffer.data.append(chunk)
+        } completionHandler: { _ in
+            done.signal()
+        }
+        return done.wait(timeout: .now() + 10) == .success ? buffer.data : nil
     }
 }

@@ -28,6 +28,7 @@ final class Library {
     private(set) var duplicateGroups: [ItemGroup] = []
     private(set) var tallies: [Destination: Tally] = [:]
     private(set) var storage: ICloudStorage?
+    private(set) var recentlyDeleted: Result<RecentlyDeleted, RecentlyDeleted.Failure>?
     private(set) var similarGroups: [ItemGroup]?
     private(set) var similarProgress = 0.0
     private(set) var shrinkRecords: [String: ShrinkRecord] = ShrinkRecords.load()
@@ -138,7 +139,7 @@ final class Library {
             for destination in Destination.allCases where destination.includes(item, shrink: shrink) {
                 tallies[destination, default: Tally()].count += 1
                 tallies[destination, default: Tally()].size += item.size
-                tallies[destination, default: Tally()].saving += Replacement.saving(item)
+                tallies[destination, default: Tally()].saving += destination.replacement?.saving(item) ?? 0
             }
         }
         return tallies
@@ -239,10 +240,11 @@ final class Library {
             for item in targets[start..<min(start + Self.replaceBatch, targets.count)] {
                 progress("Getting the current version of each item from Photos…", done)
                 do {
-                    entries.append(try await Task.detached { try await Replacer.exportCurrent(item, to: folder) }.value)
+                    let motion = kind.keepsMotion(item)
+                    entries.append(try await Task.detached { try await Replacer.exportCurrent(item, to: folder, motion: motion) }.value)
                 } catch {
                     log.error("Could not export \(item.filename, privacy: .public): \(error.localizedDescription, privacy: .public)")
-                    outcome.failed.append(item.filename)
+                    outcome.failed.append("\(item.filename) (\(error.localizedDescription))")
                 }
                 done += 1
             }
@@ -250,7 +252,7 @@ final class Library {
             progress("Waiting for you to confirm the deletion…", done)
             do {
                 try await Task.detached { [entries] in try await Replacer.replace(entries) }.value
-                let freed = entries.reduce(0) { $0 + Replacement.saving($1.item) }
+                let freed = entries.reduce(0) { $0 + kind.saving($1.item) }
                 outcome.replaced += entries.count
                 outcome.freed += freed
                 addSaving(kind == .removeMotion ? .removedMotion : .keptEdit, entries.count, freed)
@@ -272,6 +274,8 @@ final class Library {
     /// iCloud storage changes outside the library too (a deleted backup), so it is read again on its own
     func refreshStorage() async {
         storage = await Task.detached { ICloudStorage.read() }.value
+        // Read with it, so emptying Recently Deleted in Photos shows when coming back
+        recentlyDeleted = await Task.detached { RecentlyDeleted.read() }.value
     }
 
     // MARK: Shrinking
@@ -286,11 +290,15 @@ final class Library {
     /// Why a video cannot be shrunk, or nil
     func shrinkSkip(_ item: Item) -> String? {
         if item.kind != .video { return "not a video" }
-        if item.edited { return "edited in Photos: the copy would lose the edit" }
         if item.slowMotion { return "slow motion: the copy would lose it" }
         if shrinkStatus.shrunk.contains(item.id) { return "already shrunk" }
-        if shrinkStatus.copies.contains(item.id) { return "is a shrunk copy" }
+        if shrinkStatus.copies[item.id] != nil { return "is a shrunk copy" }
         return nil
+    }
+
+    /// What shrinking did to a video, whether it is the original or the copy
+    func shrinkRecord(_ item: Item) -> ShrinkRecord? {
+        shrinkRecords[item.id] ?? shrinkStatus.copies[item.id].flatMap { shrinkRecords[$0] }
     }
 }
 

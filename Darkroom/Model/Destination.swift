@@ -2,20 +2,19 @@ import Foundation
 
 /// The entries of the sidebar: each one a view of the library with its own filter and explanation.
 enum Destination: String, CaseIterable, Identifiable, Hashable {
-    case videos, photos, similar, live, edited, screenshots, shrinkable, shrinking, favorites
+    case videos, photos, similar, live, edited, rotated, screenshots, shrinking, favorites
 
     /// What the main area shows for a destination
     enum Page { case grid, groups, shrinking }
 
     var id: String { rawValue }
 
-    static let sections = ["Library", "Free up space", "Shrink videos", "Browse"]
+    static let sections = ["Library", "Free up space", "Browse"]
 
     var section: String {
         switch self {
         case .videos, .photos: "Library"
-        case .similar, .live, .edited, .screenshots: "Free up space"
-        case .shrinkable, .shrinking: "Shrink videos"
+        case .similar, .live, .edited, .rotated, .screenshots, .shrinking: "Free up space"
         case .favorites: "Browse"
         }
     }
@@ -34,10 +33,10 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .photos: "Photos"
         case .similar: "Duplicates & Similar"
         case .screenshots: "Screenshots"
-        case .shrinkable: "Videos to Shrink"
         case .shrinking: "Shrinking"
         case .favorites: "Favorites"
         case .edited: "Edited"
+        case .rotated: "Only Rotated"
         case .live: "Live Photos"
         }
     }
@@ -48,10 +47,10 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .photos: "photo"
         case .similar: "square.on.square"
         case .screenshots: "camera.viewfinder"
-        case .shrinkable: "arrow.down.right.and.arrow.up.left"
         case .shrinking: "gearshape.2"
         case .favorites: "heart"
         case .edited: "slider.horizontal.3"
+        case .rotated: "rotate.right"
         case .live: "livephoto"
         }
     }
@@ -59,20 +58,30 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
     /// One line under the title, saying what the view is for
     var hint: String {
         switch self {
-        case .videos: "Every video in the library. Videos take most of the space: the biggest come first."
+        case .videos:
+            "Every video in the library. Videos take most of the space: the biggest come first. Select some, then Shrink to re-encode them to a smaller file with ffmpeg: a copy is kept only if it is at least 20% smaller and looks the same. An edited video (rotated, trimmed) is shrunk as it looks now. Slow-motion videos are left out: their copy would lose the slow motion."
         case .photos: "Every photo in the library."
         case .similar:
             "Exact copies first: one of each is kept (a favorite, then an edited one, then the one in more albums) and the rest can go in one click. Then photos taken less than a minute apart that look alike: check each group. Click a shot to see it on the right, click Keep or Delete under it to switch."
         case .screenshots: "Screenshots are rarely worth keeping for long."
-        case .shrinkable:
-            "Videos that can be re-encoded to a smaller file with ffmpeg. Select some, then Shrink: a copy is kept only if it is at least 20% smaller and looks the same. Edited and slow-motion videos are left out, their copy would lose the edit."
         case .shrinking:
-            "Videos being shrunk, one at a time, and the results. Copies go into Photos with the same date, place, favorite and albums. Once you have checked a copy, delete the originals here: that is what frees the space."
+            "Videos being shrunk, one at a time, and the results. Copies go into Photos with the same date, place, favorite and albums. Once you have checked a copy, delete the originals here: that is what frees the space. A copy refused for its quality waits here too: compare it with the original and save it anyway if it looks fine."
         case .favorites: "Favorite photos and videos."
         case .edited:
-            "iCloud keeps both the original and the edited version of these. Select some, then Keep Edited Version: the edited version is saved as a new item with the same date, place, favorite and albums, and the original is deleted. The edit can no longer be undone."
+            "iCloud keeps both the original and the edited version of these. Select some, then Keep Edited Version: the edited version is saved as a new item with the same date, place, favorite and albums, and the original is deleted. A Live Photo stays a Live Photo, with its edited motion. The edit can no longer be undone."
+        case .rotated:
+            "Edits that only rotate an item, or change nothing at all: iCloud still keeps the original under them, a full extra copy. Select some, then Keep Edited Version: the rotated version is saved as a new item with the same date, place, favorite and albums, and the original is deleted. A Live Photo stays a Live Photo, with its rotated motion."
         case .live:
             "Live Photos carry a few seconds of video, often bigger than the photo itself. Select some, then Remove Motion: each becomes a still, with its edit, the same date, place, favorite and albums."
+        }
+    }
+
+    /// What the toolbar's main button does here, and what the sidebar counts it would free
+    var replacement: Replacement? {
+        switch self {
+        case .live: .removeMotion
+        case .edited, .rotated: .keepEdit
+        default: nil
         }
     }
 
@@ -83,11 +92,9 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .photos: item.kind == .photo
         case .similar, .shrinking: false
         case .screenshots: item.screenshot
-        case .shrinkable:
-            item.kind == .video && !item.edited && !item.slowMotion && !shrink.shrunk.contains(item.id)
-                && !shrink.copies.contains(item.id) && !shrink.kept.contains(item.id)
         case .favorites: item.favorite
-        case .edited: item.edited
+        case .edited: Replacement.keepEdit.applies(to: item)
+        case .rotated: item.onlyRotated
         case .live: item.live
         }
     }

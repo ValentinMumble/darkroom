@@ -6,11 +6,22 @@ struct GridView: View {
     let items: [Item]
     @Binding var selection: Set<String>
     let actions: Actions
+    @Environment(Library.self) private var library
     @State private var anchor: Int?
 
     /// A right-click acts on the whole selection when the item is part of it, like in Finder
     private func targets(_ item: Item) -> [Item] {
         selection.contains(item.id) ? items.filter { selection.contains($0.id) } : [item]
+    }
+
+    /// Which video is a shrunk copy, which original has one and can go, which was tried and left as it
+    /// was, and which edit only rotates
+    private func mark(_ item: Item) -> String? {
+        if library.shrinkStatus.copies[item.id] != nil { return "Shrunk" }
+        if library.shrinkStatus.shrunk.contains(item.id) { return "Copy saved" }
+        if library.shrinkStatus.kept.contains(item.id) { return "Not shrunk" }
+        if item.onlyRotated { return "Only rotated" }
+        return nil
     }
 
     var body: some View {
@@ -20,8 +31,7 @@ struct GridView: View {
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 4)], spacing: 4) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        Card(item: item, selected: selection.contains(item.id))
-                            .onTapGesture(count: 2) { actions.open(item) }
+                        Card(item: item, selected: selection.contains(item.id), mark: mark(item))
                             .onTapGesture { click(index) }
                             .contextMenu { ItemMenu(items: targets(item), actions: actions) }
                     }
@@ -31,8 +41,15 @@ struct GridView: View {
         }
     }
 
+    /// A separate double-click gesture would hold every click until the double-click time ran out, and by then
+    /// Shift or Cmd is often let go: so one gesture, reading the click itself
     private func click(_ index: Int) {
-        let modifiers = NSEvent.modifierFlags
+        let event = NSApp.currentEvent
+        if (event?.clickCount ?? 1) >= 2 {
+            actions.open(items[index])
+            return
+        }
+        let modifiers = event?.modifierFlags ?? NSEvent.modifierFlags
         let id = items[index].id
         if modifiers.contains(.shift), let anchor, anchor < items.count {
             for item in items[min(anchor, index)...max(anchor, index)] { selection.insert(item.id) }
@@ -48,13 +65,18 @@ struct GridView: View {
 struct Card: View {
     let item: Item
     let selected: Bool
+    var mark: String?
 
     var body: some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
             .overlay { Thumbnail(asset: item.asset) }
             .overlay(alignment: .topLeading) {
-                if item.favorite { Pill(text: "♥") }
+                // Pills pad themselves: pull them closer together
+                HStack(spacing: -6) {
+                    if item.favorite { Pill(text: "♥") }
+                    if let mark { Pill(text: mark) }
+                }
             }
             .overlay(alignment: .topTrailing) { Pill(text: Format.bytes(item.size)) }
             .overlay(alignment: .bottom) {

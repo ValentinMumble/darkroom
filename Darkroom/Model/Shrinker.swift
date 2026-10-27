@@ -41,25 +41,34 @@ struct ShrinkRecord: Codable, Identifiable {
 
     var id: String { original }
 
-    /// "27 MB → 16 MB (−40%), quality 95.3"
-    var summary: String {
+    /// "27 MB → 16 MB (−40%)"
+    var sizes: String {
         let percent = Int(((Double(after) / Double(before)) - 1) * 100)
         let change = percent > 0 ? "+\(percent)%" : "−\(-percent)%"
-        return "\(Format.bytes(before)) → \(Format.bytes(after)) (\(change))" + (vmaf.map { ", quality \($0)" } ?? "")
+        return "\(Format.bytes(before)) → \(Format.bytes(after)) (\(change))"
     }
+
+    /// "27 MB → 16 MB (−40%), quality 95.3"
+    var summary: String {
+        sizes + (vmaf.map { ", quality \($0)" } ?? "")
+    }
+
+    /// No copy was saved only because of the quality score, so one can be saved anyway
+    var refusedForQuality: Bool { copy == nil && vmaf != nil }
 }
 
 /// The ids the sidebar and the skip rules need, taken from the saved records
 struct ShrinkStatus {
     var shrunk: Set<String> = []
-    var copies: Set<String> = []
+    /// Each copy's original
+    var copies: [String: String] = [:]
     var kept: Set<String> = []
 
     init(records: [String: ShrinkRecord] = [:]) {
         for record in records.values {
             if let copy = record.copy {
                 shrunk.insert(record.original)
-                copies.insert(copy)
+                copies[copy] = record.original
             } else {
                 kept.insert(record.original)
             }
@@ -76,6 +85,24 @@ enum ShrinkRecords {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return (try? decoder.decode([String: ShrinkRecord].self, from: data)) ?? [:]
+    }
+
+    /// Where a copy refused for its quality waits until it is saved anyway or discarded: one folder per
+    /// video, so the file keeps the video's name
+    static func preview(original: String, name: String) -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Library/Caches/Darkroom/Previews")
+            .appending(path: original.replacingOccurrences(of: "/", with: "_"))
+            .appending(path: (name as NSString).deletingPathExtension + ".mov")
+    }
+
+    static func preview(_ record: ShrinkRecord) -> URL? {
+        let file = preview(original: record.original, name: record.name)
+        return record.refusedForQuality && FileManager.default.fileExists(atPath: file.path) ? file : nil
+    }
+
+    static func discardPreview(_ record: ShrinkRecord) {
+        try? FileManager.default.removeItem(at: preview(original: record.original, name: record.name).deletingLastPathComponent())
     }
 
     static func save(_ records: [String: ShrinkRecord]) {
@@ -105,7 +132,7 @@ final class Shrinker {
             case .checking: "Checking quality"
             case .importing: "Saving the copy to Photos"
             case .done: "Copy saved to Photos"
-            case .kept: "Original kept"
+            case .kept: "Not shrunk"
             case .failed: "Failed"
             case .cancelled: "Cancelled"
             }
@@ -190,6 +217,21 @@ final class Shrinker {
         }
     }
 
+    /// Saves a copy refused for its quality score after all, from the file kept aside for comparing
+    func saveAnyway(_ record: ShrinkRecord) async throws {
+        guard let file = ShrinkRecords.preview(record), let original = library.itemsById[record.original] else {
+            throw FFmpeg.Failure(message: "the copy or the original is no longer there")
+        }
+        let copyId = try await Shrinker.importCopy(file, like: original.asset)
+        library.saveShrinkRecord(
+            ShrinkRecord(
+                original: record.original, name: record.name, copy: copyId, kept: nil, before: record.before,
+                after: record.after, vmaf: record.vmaf, preset: record.preset, from: record.from, to: record.to,
+                date: .now))
+        ShrinkRecords.discardPreview(record)
+        log.notice("Saved \(record.name, privacy: .public) anyway: \(record.summary, privacy: .public)")
+    }
+
     private func update(_ id: UUID, _ change: (inout Job) -> Void) {
         if let index = jobs.firstIndex(where: { $0.id == id }) { change(&jobs[index]) }
     }
@@ -200,7 +242,8 @@ final class Shrinker {
         _ item: Item, preset: ShrinkPreset, in folder: URL, report: @escaping (Phase, Double) -> Void
     ) async throws -> ShrinkRecord {
         report(.downloading, 0)
-        let source = try await exportOriginal(item.asset, to: folder)
+        // The video as Photos shows it, so an edited one (rotated, trimmed) keeps its edit in the copy
+        let source = try await Replacer.exportCurrent(item, to: folder).file
         let original = try FFmpeg.probe(source)
 
         report(.encoding, 0)
@@ -231,24 +274,17 @@ final class Shrinker {
         report(.checking, 1)
         let score = try FFmpeg.vmaf(output, against: source)
         if score < preset.minVMAF {
-            return record(kept: "quality \(score) is below \(Int(preset.minVMAF))", vmaf: score)
+            // Kept aside, so it can be compared with the original and saved anyway
+            let preview = ShrinkRecords.preview(original: item.id, name: item.filename)
+            try? FileManager.default.removeItem(at: preview.deletingLastPathComponent())
+            try FileManager.default.createDirectory(at: preview.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: output, to: preview)
+            return record(kept: "the copy would look softer (quality \(score), below \(Int(preset.minVMAF)))", vmaf: score)
         }
 
         report(.importing, 1)
         let copyId = try await importCopy(output, like: item.asset)
         return record(copy: copyId, vmaf: score)
-    }
-
-    nonisolated private static func exportOriginal(_ asset: PHAsset, to folder: URL) async throws -> URL {
-        let resources = PHAssetResource.assetResources(for: asset)
-        guard let resource = resources.first(where: { $0.type == .video }) else {
-            throw FFmpeg.Failure(message: "no original video file")
-        }
-        let file = folder.appending(path: resource.originalFilename)
-        let options = PHAssetResourceRequestOptions()
-        options.isNetworkAccessAllowed = true
-        try await PHAssetResourceManager.default().writeData(for: resource, toFile: file, options: options)
-        return file
     }
 
     /// Saves the copy with the original's date, place and favorite, in the same albums

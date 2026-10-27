@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var dateRequest: DateRequest?
     @State private var shrinkRequest: ShrinkRequest?
     @State private var replaceRequest: ReplaceRequest?
+    @State private var keyMonitor: Any?
 
     private var current: Destination { destination ?? .videos }
 
@@ -60,11 +61,13 @@ struct ContentView: View {
             detail
                 .navigationTitle(current.label)
                 .navigationSubtitle(subtitle)
-                .navigationSplitViewColumnWidth(min: 480, ideal: 800)
+                // Small minimums: when the columns' minimums add up to more than the window, resizing a column
+                // makes the split view and the grid fight over the width, and the layout never settles
+                .navigationSplitViewColumnWidth(min: 300, ideal: 800)
         }
         .inspector(isPresented: $showInspector) {
             Inspector(items: selected, actions: actions)
-                .inspectorColumnWidth(min: 260, ideal: 320)
+                .inspectorColumnWidth(min: 260, ideal: 320, max: 480)
         }
         .toolbar { toolbar }
         .searchable(text: $search, placement: .toolbar, prompt: "File name")
@@ -93,6 +96,19 @@ struct ContentView: View {
             Text(library.error ?? "")
         }
         .task { await library.start() }
+        // Cmd-A selects every item shown. The Edit menu's Select All only reaches text fields, so the key is
+        // caught before it, except while typing in a field or with a sheet open.
+        .onAppear {
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                    event.charactersIgnoringModifiers == "a", current.page == .grid,
+                    let window = NSApp.keyWindow, window.sheetParent == nil, !(window.firstResponder is NSText)
+                else { return event }
+                selection = Set(shown.map(\.id))
+                return nil
+            }
+        }
+        .onDisappear { keyMonitor.map(NSEvent.removeMonitor) }
         // Free space changes with anything stored in iCloud: read it again every minute and on coming back
         .task {
             while !Task.isCancelled {
@@ -145,9 +161,10 @@ struct ContentView: View {
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         let videos = selected.filter { $0.kind == .video }.count
+        let shrinkable = selected.filter { library.shrinkSkip($0) == nil }.count
         let live = selected.filter(\.live).count
-        let edited = selected.filter(\.edited).count
-        if current == .live || (live > 0 && current != .edited) {
+        let edited = selected.filter(Replacement.keepEdit.applies).count
+        if current == .live || (live > 0 && current != .edited && current != .rotated) {
             ToolbarItem {
                 Button {
                     actions.replace(selected, .removeMotion)
@@ -160,7 +177,7 @@ struct ContentView: View {
                 .help(live == 0 ? "Select Live Photos" : "Replace the selected Live Photos by their stills")
             }
         }
-        if current == .edited {
+        if current == .edited || current == .rotated {
             ToolbarItem {
                 Button {
                     actions.replace(selected, .keepEdit)
@@ -173,17 +190,20 @@ struct ContentView: View {
                 .help(edited == 0 ? "Select edited items" : "Replace the selected items by their edited version alone")
             }
         }
-        if current == .shrinkable || (videos > 0 && current != .live && current != .edited) {
+        if current == .videos || (videos > 0 && current != .live && current != .edited && current != .rotated) {
             ToolbarItem {
                 Button {
                     actions.shrink(selected)
                 } label: {
-                    Label(videos == 0 ? "Shrink" : "Shrink \(Format.count(videos, "Video"))", systemImage: "arrow.down.right.and.arrow.up.left")
+                    Label(shrinkable == 0 ? "Shrink" : "Shrink \(Format.count(shrinkable, "Video"))", systemImage: "arrow.down.right.and.arrow.up.left")
                         .labelStyle(.titleAndIcon)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(videos == 0)
-                .help(videos == 0 ? "Select videos to shrink" : "Shrink the selected videos")
+                .disabled(shrinkable == 0)
+                .help(
+                    shrinkable > 0
+                        ? "Shrink the selected videos"
+                        : selected.compactMap { library.shrinkSkip($0) }.first.map { "Cannot shrink: \($0)" } ?? "Select videos to shrink")
             }
         }
         ToolbarItemGroup {
@@ -196,7 +216,7 @@ struct ContentView: View {
                     ForEach(years, id: \.self) { Text(String($0)).tag($0) }
                 }
                 Button("Select All", systemImage: "checkmark.circle") { selection = Set(shown.map(\.id)) }
-                    .help("Select every item shown")
+                    .help("Select every item shown (Cmd-A)")
             }
         }
         ToolbarItemGroup {

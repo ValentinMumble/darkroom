@@ -37,7 +37,7 @@ struct Sidebar: View {
         }
         guard let tally = library.tallies[entry], tally.count > 0 else { return "0" }
         // Where a replacement applies, what it would free matters more than the size
-        if entry == .live || entry == .edited {
+        if entry == .live || entry == .edited || entry == .rotated {
             return "\(tally.count.formatted()) · −\(Format.bytes(tally.saving))"
         }
         return "\(tally.count.formatted()) · \(Format.bytes(tally.size))"
@@ -74,6 +74,14 @@ struct StorageView: View {
         return total - free
     }
 
+    private func trashDetail(_ trash: RecentlyDeleted) -> String {
+        var text = "Photos removes deleted items for good 30 days after they were deleted"
+        if let purge = trash.firstPurge {
+            text += purge < .now ? ", and the oldest are due now" : ", the first on \(purge.formatted(date: .abbreviated, time: .omitted))"
+        }
+        return text + ". Empty Recently Deleted in Photos to remove them now. iCloud seems to free their space already."
+    }
+
     /// The saved total by kind of change, since the first one
     private var savedDetail: String {
         let byKind = Dictionary(grouping: library.savings, by: \.kind)
@@ -84,7 +92,7 @@ struct StorageView: View {
         }
         let since = library.savings.first.map { "Since \($0.date.formatted(date: .abbreviated, time: .omitted))\n" } ?? ""
         return since + lines.joined(separator: "\n")
-            + "\nDeleted items count against iCloud until Recently Deleted is emptied."
+            + "\nCounted when the change is made. iCloud seems to free the space right away, even while deleted items wait in Recently Deleted."
     }
 
     var body: some View {
@@ -128,28 +136,51 @@ struct StorageView: View {
                     Text(Format.bytes(free)).fontWeight(.semibold)
                 }
             }
+            if !library.savings.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle").frame(width: 8)
+                    Text("Saved with Darkroom")
+                    Spacer()
+                    Text(Format.bytes(library.savings.reduce(0) { $0 + $1.bytes })).foregroundStyle(.green)
+                }
+                .help(savedDetail)
+            }
+            switch library.recentlyDeleted {
+            case .success(let trash) where trash.count > 0:
+                HStack(spacing: 6) {
+                    Image(systemName: "trash").frame(width: 8)
+                    Text("Recently Deleted")
+                    Spacer()
+                    Text("\(trash.count.formatted()) · \(Format.bytes(trash.size))").foregroundStyle(.secondary)
+                }
+                .help(trashDetail(trash))
+            case .failure(.noAccess):
+                Button {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "trash").frame(width: 8)
+                        Text("Recently Deleted: allow Full Disk Access")
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(
+                    "Photos hides deleted items from other apps, so Darkroom reads Photos' own database for this. Click to open System Settings, then turn on Darkroom under Full Disk Access."
+                )
+            default:
+                EmptyView()
+            }
             if let fetchedAt = storage.fetchedAt {
                 // Ignore small drifts: photos keep syncing
-                if abs(freedSince) > 100 << 20 {
-                    HStack(spacing: 6) {
-                        Image(systemName: freedSince > 0 ? "arrow.down.circle" : "arrow.up.circle").frame(width: 8)
-                        Text(freedSince > 0 ? "Freed since \(Format.time(fetchedAt))" : "Added since \(Format.time(fetchedAt))")
-                        Spacer()
-                        Text(Format.bytes(abs(freedSince))).foregroundStyle(freedSince > 0 ? .green : .secondary)
-                    }
-                }
-                if !library.savings.isEmpty {
-                    HStack(spacing: 6) {
-                        Image(systemName: "checkmark.circle").frame(width: 8)
-                        Text("Saved with Darkroom")
-                        Spacer()
-                        Text(Format.bytes(library.savings.reduce(0) { $0 + $1.bytes })).foregroundStyle(.green)
-                    }
-                    .help(savedDetail)
-                }
-                Text("By app as of \(Format.time(fetchedAt)) · free space live")
+                let change =
+                    abs(freedSince) <= 100 << 20 ? ""
+                    : freedSince > 0 ? ", \(Format.bytes(freedSince)) freed since" : ", \(Format.bytes(-freedSince)) added since"
+                Text("By app as of \(Format.time(fetchedAt))\(change)")
                     .foregroundStyle(.tertiary)
-                    .help("macOS fetches the split by app from Apple now and then; the free space is read every minute")
+                    .help(
+                        "macOS fetches the split by app from Apple now and then. The free space is read every minute, so what changed since covers everything in iCloud, not only Darkroom."
+                    )
             }
         }
         .font(.caption)
