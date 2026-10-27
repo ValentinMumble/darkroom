@@ -81,7 +81,7 @@ struct StorageView: View {
         if let purge = trash.firstPurge {
             text += purge < .now ? ", and the oldest are due now" : ", the first on \(purge.formatted(date: .abbreviated, time: .omitted))"
         }
-        return text + ". Empty Recently Deleted in Photos to remove them now. iCloud seems to free their space already."
+        return text + ". They no longer count toward your iCloud storage (Apple says so), so emptying it frees no iCloud space: it only removes them for good."
     }
 
     /// The saved total by kind of change, since the first one
@@ -94,7 +94,7 @@ struct StorageView: View {
         }
         let since = library.savings.first.map { "Since \($0.date.formatted(date: .abbreviated, time: .omitted))\n" } ?? ""
         return since + lines.joined(separator: "\n")
-            + "\nCounted when the change is made. iCloud seems to free the space right away, even while deleted items wait in Recently Deleted."
+            + "\nCounted when the change is made. iCloud frees the space right away: Apple says items in Recently Deleted don't count toward your iCloud storage."
     }
 
     var body: some View {

@@ -40,8 +40,9 @@ Darkroom counts every file iCloud stores for an item, so the sizes it shows add 
 
 Select items (click, Cmd-click, Shift-click, or right-click) to delete them, add them to Favorites, change
 their date or open them in Photos (double-click does that too). Deleted items stay in Recently Deleted for
-30 days, where you can get them back. iCloud seems to free their space right away: on the library this was
-built on, the free space rose as soon as items were deleted, while they were still in Recently Deleted.
+30 days, where you can get them back, and they no longer count toward your iCloud storage: Apple says so in
+[Manage your iCloud storage](https://support.apple.com/108922), and on the library this was built on the free
+space rose as soon as items were deleted. So emptying Recently Deleted frees no iCloud space.
 
 Changing dates: move a set so the earliest gets a date and the others keep their spacing, set an exact
 date, shift by an amount, or read the date from the file name (`%Y%m%d_%H%M%S` reads

@@ -159,7 +159,7 @@ struct ContentView: View {
                     .padding(.top, 10)
                 switch current.page {
                 case .groups: GroupsView(selection: $selection, actions: actions)
-                case .shrinking: ShrinkView(actions: actions)
+                case .shrinking: ShrinkView(selection: $selection, actions: actions)
                 case .grid where current == .lifeless && library.lifeless == nil:
                     ProgressView(value: library.subjectsProgress) {
                         Text("Looking for people and pets in each Live Photo…")

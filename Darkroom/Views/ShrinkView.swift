@@ -4,6 +4,7 @@ import SwiftUI
 struct ShrinkView: View {
     @Environment(Library.self) private var library
     @Environment(Shrinker.self) private var shrinker
+    @Binding var selection: Set<String>
     let actions: Actions
     @State private var comparing: ShrinkRecord?
     /// Refused copies ticked to be saved anyway, by original
@@ -17,7 +18,7 @@ struct ShrinkView: View {
         // Originals whose copy is in Photos and which are still there
         let originals = shrunk.compactMap { library.itemsById[$0.original] }
         let saved = shrunk.reduce(0) { $0 + $1.before - $1.after }
-        // Copies refused for their score but kept aside, best first: the ones most likely to be fine
+        // Refused copies kept aside, best score first: the ones most likely to be fine
         let waiting = records.filter { ShrinkRecords.preview($0) != nil && library.itemsById[$0.original] != nil }
             .sorted { ($0.vmaf ?? 0) > ($1.vmaf ?? 0) }
         let waitingIds = Set(waiting.map(\.id))
@@ -67,7 +68,7 @@ struct ShrinkView: View {
         let allChosen = chosen.count == waiting.count
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Refused for quality").font(.title3.weight(.semibold))
+                Text("Refused copies").font(.title3.weight(.semibold))
                 Spacer()
                 Button(allChosen ? "Select None" : "Select All") {
                     accepted = allChosen ? [] : Set(waiting.map(\.original))
@@ -79,7 +80,7 @@ struct ShrinkView: View {
             }
             .padding(.top, 6)
             Text(
-                "These copies scored below the quality bar and wait here instead of going into Photos. Tick the ones you accept, or compare one first, then save them: each goes into Photos like any other copy, and its original can then be deleted above."
+                "These copies were refused, for a score below the quality bar or a different number of frames, and wait here instead of going into Photos. Tick the ones you accept, or compare one first, then save them: each goes into Photos like any other copy, and its original can then be deleted above."
             )
             .foregroundStyle(.secondary)
             if !saveFailures.isEmpty {
@@ -137,6 +138,9 @@ struct ShrinkView: View {
                 if job.phase == .encoding {
                     ProgressView(value: job.progress) { Text("Encoding, \(Int(job.progress * 100))%") }
                         .frame(maxWidth: 320)
+                } else if job.phase == .downloading && job.progress > 0 {
+                    ProgressView(value: job.progress) { Text("Downloading from iCloud, \(Int(job.progress * 100))%") }
+                        .frame(maxWidth: 320)
                 } else if let error = job.error {
                     Text(error).foregroundStyle(.red).lineLimit(3)
                 } else if let record = job.record {
@@ -150,6 +154,7 @@ struct ShrinkView: View {
         }
         .padding(8)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+        .modifier(Selectable(item: library.itemsById[job.item.id], selection: $selection, actions: actions))
     }
 
     private func recordRow(_ record: ShrinkRecord) -> some View {
@@ -184,7 +189,7 @@ struct ShrinkView: View {
             }
             Spacer()
             if let copy { Button("Open Copy") { actions.open(copy) } }
-            if record.refusedForQuality, let original {
+            if record.reviewable, let original {
                 if waiting {
                     Button("Compare…") { comparing = record }
                         .help("Switch between the original and the copy, then save the copy anyway if it looks fine")
@@ -196,6 +201,31 @@ struct ShrinkView: View {
                     .help("The copy from the first try was not kept. Encodes it again and keeps it, so you can compare it with the original.")
                 }
             }
+        }
+        .modifier(Selectable(item: original ?? copy, selection: $selection, actions: actions))
+    }
+}
+
+/// Click shows the video in the right panel, where it plays and can be deleted or made a favorite; right-click
+/// offers the same menu as in the grids
+private struct Selectable: ViewModifier {
+    let item: Item?
+    @Binding var selection: Set<String>
+    let actions: Actions
+
+    func body(content: Content) -> some View {
+        if let item {
+            content
+                .contentShape(Rectangle())
+                .onTapGesture { selection = [item.id] }
+                .overlay {
+                    if selection.contains(item.id) {
+                        RoundedRectangle(cornerRadius: 8).strokeBorder(Color.accentColor, lineWidth: 2)
+                    }
+                }
+                .contextMenu { ItemMenu(items: [item], actions: actions) }
+        } else {
+            content
         }
     }
 }

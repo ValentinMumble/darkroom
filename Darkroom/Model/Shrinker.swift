@@ -40,6 +40,8 @@ struct ShrinkRecord: Codable, Identifiable {
     let vmaf: Double?
     /// The score the copy needed, as set when it was made: missing from older records
     let minQuality: Double?
+    /// No copy went into Photos, but one waits aside to be compared: missing from older records
+    var keptAside: Bool? = nil
     let preset: ShrinkPreset
     let from: String
     let to: String
@@ -61,8 +63,9 @@ struct ShrinkRecord: Codable, Identifiable {
 
     var requiredQuality: Double { minQuality ?? preset.defaultMinQuality }
 
-    /// No copy was saved only because of the quality score, so one can be saved anyway
-    var refusedForQuality: Bool { copy == nil && vmaf != nil }
+    /// Refused for its quality score or its frame count, not its size, so the copy can be saved anyway (older
+    /// records kept aside only copies refused for their score)
+    var reviewable: Bool { copy == nil && (keptAside ?? (vmaf != nil)) }
 }
 
 /// The ids the sidebar and the skip rules need, taken from the saved records
@@ -106,7 +109,7 @@ enum ShrinkRecords {
 
     static func preview(_ record: ShrinkRecord) -> URL? {
         let file = preview(original: record.original, name: record.name)
-        return record.refusedForQuality && FileManager.default.fileExists(atPath: file.path) ? file : nil
+        return record.reviewable && FileManager.default.fileExists(atPath: file.path) ? file : nil
     }
 
     static func discardPreview(_ record: ShrinkRecord) {
@@ -188,6 +191,14 @@ final class Shrinker {
 
     private func work() async {
         while let job = jobs.first(where: { $0.phase == .queued }) {
+            // Deleted while it waited: nothing left to shrink
+            guard library.itemsById[job.item.id] != nil else {
+                update(job.id) { job in
+                    job.phase = .cancelled
+                    job.error = "The original was deleted"
+                }
+                continue
+            }
             await run(job)
         }
         worker = nil
@@ -253,7 +264,7 @@ final class Shrinker {
     ) async throws -> ShrinkRecord {
         report(.downloading, 0)
         // The video as Photos shows it, so an edited one (rotated, trimmed) keeps its edit in the copy
-        let source = try await Replacer.exportCurrent(item, to: folder).file
+        let source = try await Replacer.exportCurrent(item, to: folder) { report(.downloading, $0) }.file
         let original = try FFmpeg.probe(source)
 
         report(.encoding, 0)
@@ -262,16 +273,21 @@ final class Shrinker {
         let output = outputFolder.appending(path: source.deletingPathExtension().lastPathComponent + ".mov")
         try FFmpeg.encode(source, to: output, crf: preset.crf, duration: original.duration) { report(.encoding, $0) }
         let copy = try FFmpeg.probe(output)
-        guard copy.frames == original.frames else {
-            throw FFmpeg.Failure(message: "the copy has \(copy.frames) frames instead of \(original.frames)")
-        }
 
         let before = try fileSize(source)
         let after = try fileSize(output)
-        func record(copy copyId: String? = nil, kept: String? = nil, vmaf: Double? = nil) -> ShrinkRecord {
+        func record(copy copyId: String? = nil, kept: String? = nil, vmaf: Double? = nil, aside: Bool = false) -> ShrinkRecord {
             ShrinkRecord(
                 original: item.id, name: item.filename, copy: copyId, kept: kept, before: before, after: after,
-                vmaf: vmaf, minQuality: minQuality, preset: preset, from: original.summary, to: copy.summary, date: .now)
+                vmaf: vmaf, minQuality: minQuality, keptAside: aside, preset: preset, from: original.summary,
+                to: copy.summary, date: .now)
+        }
+        // Refused, but worth a look: the copy waits until it is saved anyway or discarded
+        func keepAside() throws {
+            let preview = ShrinkRecords.preview(original: item.id, name: item.filename)
+            try? FileManager.default.removeItem(at: preview.deletingLastPathComponent())
+            try FileManager.default.createDirectory(at: preview.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: output, to: preview)
         }
         let saving = 1 - Double(after) / Double(before)
         if after >= before {
@@ -280,19 +296,26 @@ final class Shrinker {
         if saving < minSaving {
             return record(kept: "the copy saves only \(Int(saving * 100))%")
         }
+        // One frame short is allowed: x265 sometimes drops the last one. Beyond that the quality check cannot
+        // pair the frames, so the copy waits for a look instead
+        if abs(copy.frames - original.frames) > 1 {
+            try keepAside()
+            return record(
+                kept: "it has \(copy.frames) frames instead of \(original.frames), so its quality could not be measured", aside: true)
+        }
 
         report(.checking, 1)
         let score = try FFmpeg.vmaf(output, against: source)
         if score < minQuality {
-            // Kept aside, so it can be compared with the original and saved anyway
-            let preview = ShrinkRecords.preview(original: item.id, name: item.filename)
-            try? FileManager.default.removeItem(at: preview.deletingLastPathComponent())
-            try FileManager.default.createDirectory(at: preview.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try FileManager.default.moveItem(at: output, to: preview)
-            return record(kept: "the copy would look softer (quality \(score), below \(Int(minQuality)))", vmaf: score)
+            try keepAside()
+            return record(kept: "the copy would look softer (quality \(score), below \(Int(minQuality)))", vmaf: score, aside: true)
         }
 
         report(.importing, 1)
+        // Deleted while it was being shrunk: a copy would be an orphan
+        guard PHAsset.fetchAssets(withLocalIdentifiers: [item.id], options: nil).count > 0 else {
+            throw FFmpeg.Failure(message: "the original was deleted meanwhile, so no copy was saved")
+        }
         let copyId = try await importCopy(output, like: item.asset)
         return record(copy: copyId, vmaf: score)
     }

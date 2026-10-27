@@ -49,8 +49,10 @@ enum Replacer {
     }
 
     /// Writes the version Photos shows now (with its edit) to a file of its own, and with `motion` a Live
-    /// Photo's motion as well
-    nonisolated static func exportCurrent(_ item: Item, to folder: URL, motion: Bool = false) async throws -> Entry {
+    /// Photo's motion as well. `progress` hears how much of a video has come from iCloud.
+    nonisolated static func exportCurrent(
+        _ item: Item, to folder: URL, motion: Bool = false, progress: ((Double) -> Void)? = nil
+    ) async throws -> Entry {
         let itemFolder = folder.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: itemFolder, withIntermediateDirectories: true)
         let stem = (item.filename as NSString).deletingPathExtension
@@ -60,7 +62,8 @@ enum Replacer {
         }
         if item.kind == .video {
             guard let resource = current(.fullSizeVideo, else: .video) else { throw FFmpeg.Failure(message: "no video file") }
-            return Entry(item: item, file: try await write(resource, stem: stem, to: itemFolder), type: .video, motion: nil)
+            let file = try await write(resource, stem: stem, to: itemFolder, progress: progress)
+            return Entry(item: item, file: file, type: .video, motion: nil)
         }
         if motion {
             // Photos renders an edited Live Photo's still and motion with the same pairing id, so together
@@ -153,10 +156,14 @@ enum Replacer {
     }
 
     /// Writes one of the item's files, named after the item (an edit's file is called FullSizeRender)
-    nonisolated private static func write(_ resource: PHAssetResource, stem: String, to folder: URL) async throws -> URL {
+    nonisolated private static func write(
+        _ resource: PHAssetResource, stem: String, to folder: URL, progress: ((Double) -> Void)? = nil
+    ) async throws -> URL {
         let file = folder.appending(path: stem + "." + (resource.originalFilename as NSString).pathExtension)
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = true
+        // Photos calls it only while downloading from iCloud, not for a file already on this Mac
+        options.progressHandler = progress
         try await PHAssetResourceManager.default().writeData(for: resource, toFile: file, options: options)
         return file
     }
