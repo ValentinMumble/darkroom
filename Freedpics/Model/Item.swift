@@ -27,8 +27,12 @@ struct Item: Identifiable, Hashable {
     let live: Bool
     let slowMotion: Bool
     let location: CLLocation?
+    /// Photos' last change to it: a new date means a new picture to analyse
+    let modified: Date?
+    /// Converted to HEIC once and refused: it stays a JPEG
+    let heicRefused: Bool
 
-    init(asset: PHAsset, resources: Resources) {
+    init(asset: PHAsset, resources: Resources, heicRefused: Bool = false) {
         id = asset.localIdentifier
         self.asset = asset
         kind = asset.mediaType == .video ? .video : .photo
@@ -50,11 +54,19 @@ struct Item: Identifiable, Hashable {
         live = asset.mediaSubtypes.contains(.photoLive)
         slowMotion = asset.mediaSubtypes.contains(.videoHighFrameRate)
         location = asset.location
+        modified = asset.modificationDate
+        self.heicRefused = heicRefused
     }
 
     /// A still that keeps a motion clip Photos no longer plays: what Remove Motion left behind before it saved
     /// stills as new files
     var hiddenMotion: Bool { kind == .photo && !live && motionSize > 0 }
+
+    /// Where the analyses keep their answers: the item as it is now, so an edit asks again
+    var analysisKey: String { "\(id)|\(modified?.timeIntervalSinceReferenceDate ?? 0)" }
+
+    /// Saved as JPEG, Google Motion Photos (.MP.jpg) included
+    var isJPEG: Bool { ["jpg", "jpeg"].contains((filename as NSString).pathExtension.lowercased()) }
 
     /// The uuid Photos uses in links: the local identifier without its "/L0/001" suffix
     var uuid: String { String(id.prefix { $0 != "/" }) }
@@ -158,16 +170,15 @@ struct Resources {
 
     /// Waits for a small resource's bytes. Only called while the library loads, off the main thread.
     private static func read(_ resource: PHAssetResource) -> Data? {
-        final class Buffer: @unchecked Sendable { var data = Data() }
-        let buffer = Buffer()
+        let buffer = Locked(Data())
         let done = DispatchSemaphore(value: 0)
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = true
         PHAssetResourceManager.default().requestData(for: resource, options: options) { chunk in
-            buffer.data.append(chunk)
+            buffer.update { $0.append(chunk) }
         } completionHandler: { _ in
             done.signal()
         }
-        return done.wait(timeout: .now() + 10) == .success ? buffer.data : nil
+        return done.wait(timeout: .now() + 10) == .success ? buffer.value : nil
     }
 }

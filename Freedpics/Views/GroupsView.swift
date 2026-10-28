@@ -31,13 +31,13 @@ struct GroupsView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 section("Exact copies", rows: copies, deleteAll: true)
-                if let similar = library.similarGroups {
+                if let similar = library.analysis.similarGroups {
                     // A group made only of exact copies is already listed above
                     let rows = rows(similar).filter { !Set($0.items.map(\.id)).isSubset(of: copied) }.reversed()
                     section("Similar shots", rows: Array(rows), deleteAll: false)
                 } else {
                     Text("Similar shots").font(.title3.weight(.semibold)).padding(.top, 8)
-                    ProgressView(value: library.similarProgress) {
+                    ProgressView(value: library.analysis.similarProgress) {
                         Text("Comparing photos taken less than a minute apart…")
                     }
                     .task { await library.findSimilar() }

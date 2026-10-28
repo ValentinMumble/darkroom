@@ -9,6 +9,7 @@ struct GridView: View {
     /// The last arrow key pressed in the window
     var arrow: Arrow?
     @Environment(Library.self) private var library
+    @AppStorage(Settings.Key.thumbnailSize.rawValue) private var cardWidth = Self.defaultCardWidth
     @State private var anchor: Int?
     /// Cards per row, for the up and down arrows
     @State private var columns = 1
@@ -34,18 +35,20 @@ struct GridView: View {
         if items.isEmpty {
             ContentUnavailableView("Nothing here", systemImage: "photo.on.rectangle", description: Text("No items match."))
         } else {
+            let width = CGFloat(min(max(cardWidth, Self.cardWidths.lowerBound), Self.cardWidths.upperBound))
+            let pixels = Self.pixels(for: width)
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: Self.cardWidth), spacing: Self.spacing)], spacing: Self.spacing) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: width), spacing: Self.spacing)], spacing: Self.spacing) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                            Card(item: item, selected: selection.contains(item.id), mark: mark(item))
+                            Card(item: item, selected: selection.contains(item.id), mark: mark(item), pixels: pixels)
                                 .onTapGesture { click(index) }
                                 .contextMenu { ItemMenu(items: targets(item), actions: actions) }
                         }
                     }
                     // Only read by the arrow keys, never fed back into the layout
                     .onGeometryChange(for: Int.self) { geometry in
-                        max(1, Int((geometry.size.width + Self.spacing) / (Self.cardWidth + Self.spacing)))
+                        max(1, Int((geometry.size.width + Self.spacing) / (width + Self.spacing)))
                     } action: { count in
                         columns = count
                     }
@@ -58,8 +61,16 @@ struct GridView: View {
         }
     }
 
-    private static let cardWidth: CGFloat = 150
-    private static let spacing: CGFloat = 4
+    /// The smallest a card gets, in points: the toolbar's slider and View > Bigger or Smaller Thumbnails set it
+    static let defaultCardWidth = 150.0
+    static let cardWidths = 100.0...400.0
+    nonisolated private static let spacing: CGFloat = 4
+
+    /// What to ask Photos for: a card grows up to twice its smallest width to fill a row, on a 2x screen. In
+    /// steps, so the slider does not ask again for every point.
+    private static func pixels(for width: CGFloat) -> CGFloat {
+        width <= 160 ? 320 : width <= 260 ? 640 : 960
+    }
 
     /// Left and right go to the previous and next item, up and down a row, scrolling to keep it in view
     private func move(_ direction: Arrow.Direction, _ proxy: ScrollViewProxy) {
@@ -125,11 +136,12 @@ struct Card: View {
     let item: Item
     let selected: Bool
     var mark: String?
+    var pixels: CGFloat = 320
 
     var body: some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
-            .overlay { Thumbnail(asset: item.asset) }
+            .overlay { Thumbnail(asset: item.asset, pixels: pixels) }
             .overlay(alignment: .topLeading) {
                 // Pills pad themselves: pull them closer together
                 HStack(spacing: -6) {

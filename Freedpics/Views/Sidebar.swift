@@ -27,7 +27,7 @@ struct Sidebar: View {
     private func tally(_ entry: Destination) -> String {
         if entry == .similar {
             let copies = library.duplicateGroups.reduce(0) { $0 + $1.itemIds.count - 1 }
-            let similar = library.similarGroups.map { ", \(Format.count($0.count, "group"))" } ?? ""
+            let similar = library.analysis.similarGroups.map { ", \(Format.count($0.count, "group"))" } ?? ""
             return "\(copies == 1 ? "1 copy" : "\(copies.formatted()) copies")\(similar)"
         }
         if entry == .shrinking {
@@ -36,7 +36,12 @@ struct Sidebar: View {
             return originals.isEmpty ? "" : "\(originals.count) to delete"
         }
         // Not worked out until the view is first opened
-        if entry == .lifeless && library.lifeless == nil { return "" }
+        if entry == .lifeless && library.analysis.lifeless == nil { return "" }
+        if entry == .accidental && library.analysis.accidental == nil { return "" }
+        if entry == .drive {
+            guard let files = library.driveFiles else { return "" }
+            return "\(files.count.formatted()) · \(Format.bytes(files.reduce(0) { $0 + $1.size }))"
+        }
         guard let tally = library.tallies[entry], tally.count > 0 else { return "0" }
         // Where a replacement applies, what it would free matters more than the size
         if entry == .live || entry == .lifeless || entry == .hiddenMotion || entry == .edited || entry == .rotated {
@@ -50,6 +55,7 @@ struct Sidebar: View {
 struct StorageView: View {
     let storage: ICloudStorage
     let library: Library
+    @State private var showSavings = false
 
     private static let colors: [Color] = [.blue, .orange, .cyan, .green]
 
@@ -139,13 +145,20 @@ struct StorageView: View {
                 }
             }
             if !library.savings.isEmpty {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle").frame(width: 8)
-                    Text("Saved with Freedpics")
-                    Spacer()
-                    Text(Format.bytes(library.savings.reduce(0) { $0 + $1.bytes })).foregroundStyle(.green)
+                Button {
+                    showSavings = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle").frame(width: 8)
+                        Text("Saved with Freedpics")
+                        Spacer()
+                        Text(Format.bytes(library.savings.reduce(0) { $0 + $1.bytes })).foregroundStyle(.green)
+                    }
+                    .contentShape(Rectangle())
                 }
-                .help(savedDetail)
+                .buttonStyle(.plain)
+                .help(savedDetail + "\nClick for the history.")
+                .sheet(isPresented: $showSavings) { SavingsSheet(library: library) }
             }
             switch library.recentlyDeleted {
             case .success(let trash) where trash.count > 0:

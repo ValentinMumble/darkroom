@@ -10,7 +10,7 @@ struct Thumbnail: View {
     var original = false
     @State private var image: NSImage?
     /// For screenshots of the app: `defaults write com.valentinmumble.freedpics BlurPhotos -bool YES`
-    @AppStorage("BlurPhotos") private var blurPhotos = false
+    @AppStorage(Settings.Key.blurPhotos.rawValue) private var blurPhotos = false
 
     var body: some View {
         ZStack {

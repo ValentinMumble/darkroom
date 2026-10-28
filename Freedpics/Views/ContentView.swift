@@ -5,7 +5,7 @@ struct ContentView: View {
     @Environment(Shrinker.self) private var shrinker
     // For screenshots: open --args -StartDestination similar -SelectFirst YES
     @State private var destination: Destination? =
-        Destination(rawValue: UserDefaults.standard.string(forKey: "StartDestination") ?? "") ?? .videos
+        Destination(rawValue: UserDefaults.standard.string(forKey: Settings.Key.startDestination.rawValue) ?? "") ?? .videos
     @State private var selection: Set<String> = []
     @State private var sort: Sort = .biggest
     @State private var year = 0
@@ -16,21 +16,23 @@ struct ContentView: View {
     @State private var replaceRequest: ReplaceRequest?
     @State private var keyMonitor: Any?
     @State private var arrow: Arrow?
-    @AppStorage("VideosNotShrunkOnly") private var notShrunkOnly = false
+    @AppStorage(Settings.Key.videosNotShrunkOnly.rawValue) private var notShrunkOnly = false
+    @AppStorage(Settings.Key.thumbnailSize.rawValue) private var thumbnailSize = GridView.defaultCardWidth
 
     private var current: Destination { destination ?? .videos }
 
     /// The destination's items, before the year and search filters
-    private func listed(_ item: Item) -> Bool {
-        current.includes(item, shrink: library.shrinkStatus, lifeless: library.lifeless ?? [])
+    private func listed(_ item: Item, _ context: ListContext) -> Bool {
+        current.includes(item, in: context)
             && (current != .videos || !notShrunkOnly || library.shrinkUntried(item))
     }
 
     private var shown: [Item] {
         let query = search.trimmingCharacters(in: .whitespaces).lowercased()
+        let context = library.listContext
         return library.items
             .filter { item in
-                listed(item)
+                listed(item, context)
                     && (year == 0 || Calendar.current.component(.year, from: item.date) == year)
                     && (query.isEmpty || item.filename.lowercased().contains(query))
             }
@@ -42,7 +44,8 @@ struct ContentView: View {
     }
 
     private var years: [Int] {
-        let years = library.items.filter(listed)
+        let context = library.listContext
+        let years = library.items.filter { listed($0, context) }
             .map { Calendar.current.component(.year, from: $0.date) }
         return Array(Set(years)).sorted(by: >)
     }
@@ -78,7 +81,8 @@ struct ContentView: View {
                 // makes the split view and the grid fight over the width, and the layout never settles
                 .navigationSplitViewColumnWidth(min: 300, ideal: 800)
         }
-        .inspector(isPresented: $showInspector) {
+        // Files have no details panel: the table shows all there is
+        .inspector(isPresented: Binding(get: { showInspector && current.page != .files }, set: { showInspector = $0 })) {
             Inspector(items: selected, actions: actions)
                 .inspectorColumnWidth(min: 260, ideal: 420, max: 600)
         }
@@ -93,7 +97,7 @@ struct ContentView: View {
             }
         }
         .onChange(of: library.state) {
-            if library.state == .ready, selection.isEmpty, UserDefaults.standard.bool(forKey: "SelectFirst"),
+            if library.state == .ready, selection.isEmpty, UserDefaults.standard.bool(forKey: Settings.Key.selectFirst.rawValue),
                 let first = shown.first
             {
                 selection = [first.id]
@@ -108,7 +112,11 @@ struct ContentView: View {
         } message: {
             Text(library.error ?? "")
         }
-        .task { await library.start() }
+        .task {
+            guard !FreedpicsApp.isTesting else { return }
+            await library.start()
+            shrinker.restoreQueue()
+        }
         // Cmd-A selects every item shown. The Edit menu's Select All only reaches text fields, so the key is
         // caught before it, except while typing in a field or with a sheet open.
         .onAppear {
@@ -130,6 +138,15 @@ struct ContentView: View {
                 // M marks the selected Live Photos for Remove Motion, or unmarks them
                 if modifiers.isEmpty, key == "m", selected.contains(where: \.live) {
                     library.toggleMark(selected)
+                    return nil
+                }
+                // Space plays or pauses the video or Live Photo in the panel, Return opens the item in Photos
+                if modifiers.isEmpty, key == " ", selection.count == 1 {
+                    NotificationCenter.default.post(name: .togglePlayback, object: nil)
+                    return nil
+                }
+                if modifiers.isEmpty, [.carriageReturn, .enter].contains(event.specialKey), let item = selected.first, selection.count == 1 {
+                    actions.open(item)
                     return nil
                 }
                 return event
@@ -180,12 +197,19 @@ struct ContentView: View {
                 switch current.page {
                 case .groups: GroupsView(selection: $selection, actions: actions)
                 case .shrinking: ShrinkView(selection: $selection, actions: actions)
-                case .grid where current == .lifeless && library.lifeless == nil:
-                    ProgressView(value: library.subjectsProgress) {
+                case .files: FilesView()
+                case .grid where current == .lifeless && library.analysis.lifeless == nil:
+                    ProgressView(value: library.analysis.subjectsProgress) {
                         Text("Looking for people and pets in each Live Photo…")
                     }
                     .padding(40)
                     .task { await library.findSubjects() }
+                case .grid where current == .accidental && library.analysis.accidental == nil:
+                    ProgressView(value: library.analysis.accidentalProgress) {
+                        Text("Scoring each photo, the first time only…")
+                    }
+                    .padding(40)
+                    .task { await library.findAccidental() }
                 case .grid: GridView(items: shown, selection: $selection, actions: actions, arrow: arrow)
                 }
             }
@@ -197,6 +221,7 @@ struct ContentView: View {
         let shrinkable = selected.filter { library.shrinkSkip($0) == nil }.count
         let live = selected.filter(Replacement.removeMotion.applies).count
         let edited = selected.filter(Replacement.keepEdit.applies).count
+        let jpegs = selected.filter(Replacement.convertToHEIC.applies).count
         let markedItems = library.items.filter { library.marked.contains($0.id) }
         if current == .live || current == .lifeless || current == .hiddenMotion || (live > 0 && current != .edited && current != .rotated) {
             ToolbarItem {
@@ -206,8 +231,7 @@ struct ContentView: View {
                     Label(live == 0 ? "Remove Motion" : "Remove Motion from \(live)", systemImage: "livephoto.slash")
                         .labelStyle(.titleAndIcon)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(live == 0)
+                .prominent(when: live > 0)
                 .help(live == 0 ? "Select Live Photos" : "Replace the selected Live Photos by their stills")
             }
         }
@@ -231,9 +255,20 @@ struct ContentView: View {
                     Label(edited == 0 ? "Keep Edited Version" : "Keep Edited Version of \(edited)", systemImage: "wand.and.stars")
                         .labelStyle(.titleAndIcon)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(edited == 0)
+                .prominent(when: edited > 0)
                 .help(edited == 0 ? "Select edited items" : "Replace the selected items by their edited version alone")
+            }
+        }
+        if current == .jpeg {
+            ToolbarItem {
+                Button {
+                    actions.replace(selected, .convertToHEIC)
+                } label: {
+                    Label(jpegs == 0 ? "Convert to HEIC" : "Convert \(jpegs) to HEIC", systemImage: "photo.badge.arrow.down")
+                        .labelStyle(.titleAndIcon)
+                }
+                .prominent(when: jpegs > 0)
+                .help(jpegs == 0 ? "Select JPEG photos" : "Save the selected photos as HEIC, checked against their JPEG")
             }
         }
         if current == .videos || (videos > 0 && current != .live && current != .edited && current != .rotated) {
@@ -244,8 +279,7 @@ struct ContentView: View {
                     Label(shrinkable == 0 ? "Shrink" : "Shrink \(Format.count(shrinkable, "Video"))", systemImage: "arrow.down.right.and.arrow.up.left")
                         .labelStyle(.titleAndIcon)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(shrinkable == 0)
+                .prominent(when: shrinkable > 0)
                 .help(
                     shrinkable > 0
                         ? "Shrink the selected videos"
@@ -261,6 +295,15 @@ struct ContentView: View {
                     Text("All Years").tag(0)
                     ForEach(years, id: \.self) { Text(String($0)).tag($0) }
                 }
+                Slider(value: $thumbnailSize, in: GridView.cardWidths) {
+                    Text("Thumbnail Size")
+                } minimumValueLabel: {
+                    Image(systemName: "photo").imageScale(.small)
+                } maximumValueLabel: {
+                    Image(systemName: "photo").imageScale(.large)
+                }
+                .frame(width: 140)
+                .help("Thumbnail size (Cmd-+ and Cmd-−)")
                 if current == .videos {
                     Picker("Show", selection: $notShrunkOnly) {
                         Text("All Videos").tag(false)
@@ -272,6 +315,13 @@ struct ContentView: View {
                     .help("Select every item shown (Cmd-A)")
             }
         }
+        if current.page != .files {
+            itemActions
+        }
+    }
+
+    /// What can be done to the selected photos and videos
+    @ToolbarContentBuilder private var itemActions: some ToolbarContent {
         ToolbarItemGroup {
             let favorite = !selected.isEmpty && selected.allSatisfy(\.favorite)
             Button("Favorite", systemImage: favorite ? "heart.fill" : "heart") {
@@ -286,6 +336,18 @@ struct ContentView: View {
                 .disabled(selected.isEmpty)
                 .keyboardShortcut(.delete, modifiers: .command)
             Button("Details", systemImage: "info.circle") { showInspector.toggle() }
+        }
+    }
+}
+
+extension View {
+    /// The blue button only while it can be pressed: a disabled one drew its blue label on its blue fill
+    @ViewBuilder
+    func prominent(when enabled: Bool) -> some View {
+        if enabled {
+            buttonStyle(.borderedProminent)
+        } else {
+            buttonStyle(.bordered).disabled(true)
         }
     }
 }

@@ -16,10 +16,10 @@ struct RecentlyDeleted {
     /// When the first ones go for good: Photos keeps deleted items 30 days
     let firstPurge: Date?
 
-    private static let database = FileManager.default.homeDirectoryForCurrentUser
+    static let photosDatabase = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Pictures/Photos Library.photoslibrary/database/Photos.sqlite")
 
-    static func read() -> Result<RecentlyDeleted, Failure> {
+    static func read(_ database: URL = photosDatabase) -> Result<RecentlyDeleted, Failure> {
         // Without Full Disk Access macOS refuses even to open the file
         let descriptor = open(database.path, O_RDONLY)
         guard descriptor >= 0 else { return .failure(errno == ENOENT ? .unreadable : .noAccess) }

@@ -101,11 +101,12 @@ enum FFmpeg {
         try process.run()
 
         // Standard error is read on another thread, so neither pipe fills up and stalls the tool
-        var errorData = Data()
+        let errorData = Locked(Data())
         let reading = DispatchGroup()
         reading.enter()
         DispatchQueue.global().async {
-            errorData = errors.fileHandleForReading.readDataToEndOfFile()
+            let data = errors.fileHandleForReading.readDataToEndOfFile()
+            errorData.update { $0 = data }
             reading.leave()
         }
         var outputData = Data()
@@ -121,7 +122,7 @@ enum FFmpeg {
         }
         process.waitUntilExit()
         reading.wait()
-        let errorText = String(decoding: errorData, as: UTF8.self)
+        let errorText = String(decoding: errorData.value, as: UTF8.self)
         guard process.terminationStatus == 0 else {
             throw Failure(message: "\(tool.lastPathComponent) failed: \(errorText.suffix(400))")
         }

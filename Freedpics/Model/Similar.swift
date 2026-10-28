@@ -12,9 +12,13 @@ struct ItemGroup: Identifiable {
 }
 
 enum Similar {
-    struct Fingerprint {
+    struct Fingerprint: Codable {
         let hash: UInt64?
+        /// Vision's aesthetics score, -1 to 1
         let score: Float?
+        /// Vision's guess that the photo keeps information rather than a moment: a receipt, a document, a
+        /// whiteboard. nil in fingerprints taken before it was kept.
+        var utility: Bool?
     }
 
     static let gap: TimeInterval = 60
@@ -24,7 +28,8 @@ enum Similar {
     /// print was tried too: it calls two framings of the same view "very close", which are both worth keeping.
     static let maxDistance = 16
 
-    /// Groups the photos (any order). `known` holds fingerprints computed before; the result returns them all.
+    /// Groups the photos (any order). `known` holds fingerprints computed before, by analysis key; the result
+    /// returns them all.
     nonisolated static func groups(
         _ photos: [Item], known: [String: Fingerprint], progress: @escaping (Double) -> Void
     ) -> ([ItemGroup], [String: Fingerprint]) {
@@ -36,8 +41,8 @@ enum Similar {
             candidates.insert(second.id)
         }
         var fingerprints = known
-        for (index, item) in shots.enumerated() where candidates.contains(item.id) && fingerprints[item.id] == nil {
-            fingerprints[item.id] = fingerprint(item.asset)
+        for (index, item) in shots.enumerated() where candidates.contains(item.id) && fingerprints[item.analysisKey] == nil {
+            fingerprints[item.analysisKey] = fingerprint(item.asset)
             if index % 20 == 0 { progress(Double(index) / Double(shots.count)) }
         }
 
@@ -57,15 +62,15 @@ enum Similar {
 
     private static func alike(_ first: Item, _ second: Item, _ fingerprints: [String: Fingerprint]) -> Bool {
         guard second.date.timeIntervalSince(first.date) <= gap,
-            let firstHash = fingerprints[first.id]?.hash, let secondHash = fingerprints[second.id]?.hash
+            let firstHash = fingerprints[first.analysisKey]?.hash, let secondHash = fingerprints[second.analysisKey]?.hash
         else { return false }
-        return (firstHash ^ secondHash).nonzeroBitCount <= maxDistance
+        return distance(firstHash, secondHash) <= maxDistance
     }
 
     /// The shot to keep: a favorite or an edited one first (someone cared about it), then the best score.
     private static func group(_ items: [Item], _ fingerprints: [String: Fingerprint]) -> ItemGroup {
         let scores = items.reduce(into: [String: Float]()) { scores, item in
-            if let score = fingerprints[item.id]?.score { scores[item.id] = score }
+            if let score = fingerprints[item.analysisKey]?.score { scores[item.id] = score }
         }
         let best = items.max { first, second in
             (first.favorite ? 1 : 0, first.edited ? 1 : 0, scores[first.id] ?? -2)
@@ -74,11 +79,12 @@ enum Similar {
         return ItemGroup(id: items[0].id, itemIds: items.map(\.id), pick: best.id, scores: scores)
     }
 
-    private static func fingerprint(_ asset: PHAsset) -> Fingerprint {
+    static func fingerprint(_ asset: PHAsset) -> Fingerprint {
         guard let image = smallImage(asset) else { return Fingerprint(hash: nil, score: nil) }
         let request = VNCalculateImageAestheticsScoresRequest()
         try? VNImageRequestHandler(cgImage: image).perform([request])
-        return Fingerprint(hash: differenceHash(image), score: request.results?.first?.overallScore)
+        let result = request.results?.first
+        return Fingerprint(hash: differenceHash(image), score: result?.overallScore, utility: result?.isUtility)
     }
 
     /// The photo as it looks now, at most `pixels` on its longer side, waited for: only called off the main thread
@@ -97,7 +103,12 @@ enum Similar {
         return result
     }
 
-    private static func differenceHash(_ image: CGImage) -> UInt64? {
+    /// How many of the 64 bits differ: 0 for the same picture
+    static func distance(_ first: UInt64, _ second: UInt64) -> Int {
+        (first ^ second).nonzeroBitCount
+    }
+
+    static func differenceHash(_ image: CGImage) -> UInt64? {
         let width = 9
         let height = 8
         var pixels = [UInt8](repeating: 0, count: width * height)

@@ -47,6 +47,10 @@ struct ReplaceSheet: View {
                 if favorites > 0 {
                     Toggle("Leave the \(Format.count(favorites, "favorite")) as Live Photos", isOn: $keepFavorites)
                 }
+            } else if kind == .convertToHEIC {
+                Text(
+                    "Each photo is saved again as HEIC and checked against its JPEG: it takes the JPEG's place, with the same date, place, favorite and albums, only if it scores \(Int(Stills.minScore)) or more out of 100 (the same to the eye) and saves at least 20%. Photos with an HDR layer are left as they are. A refused photo stays a JPEG and is not offered again. The figure above is an estimate from what passed on this library, refusals included; the space freed is measured once converted."
+                )
             } else {
                 Text(
                     "Each item is replaced by its edited version alone, with the same date, place, favorite and albums. A Live Photo stays a Live Photo, with its edited motion. The edit can no longer be undone, and the original is gone for good once Recently Deleted is emptied."
@@ -86,19 +90,25 @@ struct ReplaceSheet: View {
 
     private func start(_ targets: [Item]) {
         message = "Starting…"
+        Notifier.ask()
         Task {
-            outcome = await library.replace(targets, kind: kind) { text, count in
+            let outcome = await library.replace(targets, kind: kind) { text, count in
                 message = text
                 done = count
             }
+            self.outcome = outcome
+            Notifier.post("\(kind.title) done", summary(outcome))
         }
     }
 
     private func summary(_ outcome: Library.ReplaceOutcome) -> String {
-        var parts = ["\(Format.count(outcome.replaced, "item")) replaced, about \(Format.bytes(outcome.freed)) freed."]
+        var parts = ["\(Format.count(outcome.replaced, "item")) replaced, \(Format.bytes(outcome.freed)) freed, as measured in Photos."]
         if outcome.cancelled { parts.append("You refused a deletion, so that batch and the ones after it were left as they were.") }
         if !outcome.failed.isEmpty {
             parts.append("Left out: \(outcome.failed.prefix(5).joined(separator: ", "))\(outcome.failed.count > 5 ? "…" : "").")
+        }
+        if !outcome.warnings.isEmpty {
+            parts.append("Check these in Photos: \(outcome.warnings.prefix(5).joined(separator: ", "))\(outcome.warnings.count > 5 ? "…" : "").")
         }
         return parts.joined(separator: " ")
     }

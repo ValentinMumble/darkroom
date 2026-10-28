@@ -2,10 +2,11 @@ import Foundation
 
 /// The entries of the sidebar: each one a view of the library with its own filter and explanation.
 enum Destination: String, CaseIterable, Identifiable, Hashable {
-    case videos, photos, similar, live, lifeless, hiddenMotion, edited, rotated, screenshots, shrinking, favorites
+    case videos, photos, similar, accidental, live, lifeless, hiddenMotion, edited, rotated, jpeg, screenshots, shrinking,
+        drive, favorites
 
     /// What the main area shows for a destination
-    enum Page { case grid, groups, shrinking }
+    enum Page { case grid, groups, shrinking, files }
 
     var id: String { rawValue }
 
@@ -14,7 +15,8 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
     var section: String {
         switch self {
         case .videos, .photos: "Library"
-        case .similar, .live, .lifeless, .hiddenMotion, .edited, .rotated, .screenshots, .shrinking: "Free up space"
+        case .similar, .accidental, .live, .lifeless, .hiddenMotion, .edited, .rotated, .jpeg, .screenshots, .shrinking, .drive:
+            "Free up space"
         case .favorites: "Browse"
         }
     }
@@ -23,6 +25,7 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .similar: .groups
         case .shrinking: .shrinking
+        case .drive: .files
         default: .grid
         }
     }
@@ -32,14 +35,17 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .videos: "Videos"
         case .photos: "Photos"
         case .similar: "Duplicates & Similar"
+        case .accidental: "Probably Accidental"
         case .screenshots: "Screenshots"
         case .shrinking: "Shrinking"
+        case .drive: "iCloud Drive"
         case .favorites: "Favorites"
         case .edited: "Edited"
         case .rotated: "Only Rotated"
         case .live: "Live Photos"
         case .lifeless: "No People or Pets"
         case .hiddenMotion: "Hidden Motion"
+        case .jpeg: "JPEG Photos"
         }
     }
 
@@ -48,14 +54,17 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .videos: "video"
         case .photos: "photo"
         case .similar: "square.on.square"
+        case .accidental: "questionmark.square.dashed"
         case .screenshots: "camera.viewfinder"
         case .shrinking: "gearshape.2"
+        case .drive: "icloud"
         case .favorites: "heart"
         case .edited: "slider.horizontal.3"
         case .rotated: "rotate.right"
         case .live: "livephoto"
         case .lifeless: "mountain.2"
         case .hiddenMotion: "eye.slash"
+        case .jpeg: "photo.badge.arrow.down"
         }
     }
 
@@ -67,14 +76,20 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
         case .photos: "Every photo in the library."
         case .similar:
             "Exact copies first: one of each is kept (a favorite, then an edited one, then the one in more albums) and the rest can go in one click. Then photos taken less than a minute apart that look alike: check each group. Click a shot to see it on the right, click Keep or Delete under it to switch."
+        case .accidental:
+            "Photos that look taken by mistake: in a pocket, of the floor, a black or blurred frame. Vision, on this Mac, gave them a very low score and found nobody in them. Favorites and edited photos are left out. Some may still be worth keeping, so look before deleting."
         case .screenshots: "Screenshots are rarely worth keeping for long."
         case .shrinking:
             "Videos being shrunk, one at a time, and the results. Copies go into Photos with the same date, place, favorite and albums. Once you have checked a copy, delete the originals here: that is what frees the space. A copy refused for its quality waits here too: compare it with the original and save it anyway if it looks fine."
         case .favorites: "Favorite photos and videos."
+        case .drive:
+            "Files in iCloud Drive and in apps' iCloud folders, from 1 MB, biggest first. Select some, then Move to Trash: they leave iCloud Drive on all your devices. When macOS keeps a file for the app that made it, Finder moves it instead, and macOS asks you once to allow that. Files an app keeps for itself, like WhatsApp's chat backup, are listed so you see what they take, but are deleted from that app. Double-click a file to open it."
         case .edited:
             "iCloud keeps both the original and the edited version of these. Select some, then Keep Edited Version: the edited version is saved as a new item with the same date, place, favorite and albums, and the original is deleted. A Live Photo stays a Live Photo, with its edited motion. The edit can no longer be undone."
         case .rotated:
             "Edits that only rotate an item, or change nothing at all: iCloud still keeps the original under them, a full extra copy. Select some, then Keep Edited Version: the rotated version is saved as a new item with the same date, place, favorite and albums, and the original is deleted. A Live Photo stays a Live Photo, with its rotated motion."
+        case .jpeg:
+            "JPEG photos that HEIC could make smaller. Only lightly compressed ones are listed (1.5 bits per pixel or more): most phone JPEGs are already about as small as HEIC would make them. Select some, then Convert to HEIC: each copy is checked against its JPEG before it takes its place, with the same date, place, favorite and albums. A photo with an HDR layer, or whose copy would look different or save under 20%, stays a JPEG and leaves this list. On this library about half of those listed passed. A Google Motion Photo loses its hidden video."
         case .hiddenMotion:
             "Stills that still store the motion clip of the Live Photo they came from, though Photos no longer plays it, so iCloud still counts it. Select them, then Remove Motion: each is saved again as a new file, and iCloud lets go of the clip."
         case .lifeless:
@@ -88,27 +103,37 @@ enum Destination: String, CaseIterable, Identifiable, Hashable {
     var replacement: Replacement? {
         switch self {
         case .live, .lifeless, .hiddenMotion: .removeMotion
+        case .jpeg: .convertToHEIC
         case .edited, .rotated: .keepEdit
         default: nil
         }
     }
 
     /// Whether the grid of this destination shows an item
-    /// `lifeless`: Live Photos where Vision found nobody (see Subjects)
-    func includes(_ item: Item, shrink: ShrinkStatus, lifeless: Set<String> = []) -> Bool {
+    func includes(_ item: Item, in context: ListContext) -> Bool {
         switch self {
         case .videos: item.kind == .video
         case .photos: item.kind == .photo
-        case .similar, .shrinking: false
+        case .similar, .shrinking, .drive: false
         case .screenshots: item.screenshot
         case .favorites: item.favorite
         case .edited: Replacement.keepEdit.applies(to: item)
         case .rotated: item.onlyRotated
         case .live: item.live
-        case .lifeless: item.live && lifeless.contains(item.id)
+        case .lifeless: item.live && context.lifeless.contains(item.id)
+        case .accidental: context.accidental.contains(item.id)
         case .hiddenMotion: item.hiddenMotion
+        case .jpeg: Replacement.convertToHEIC.applies(to: item)
         }
     }
+}
+
+/// What some destinations need besides the item itself: what the analyses found
+struct ListContext {
+    /// Live Photos where Vision found nobody (see Subjects)
+    var lifeless: Set<String> = []
+    /// Photos that look taken by mistake (see Accidental)
+    var accidental: Set<String> = []
 }
 
 enum Sort: String, CaseIterable, Identifiable {

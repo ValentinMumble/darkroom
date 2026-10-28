@@ -4,21 +4,51 @@ import ImageIO
 import Photos
 import UniformTypeIdentifiers
 
-/// A lighter version of an item that replaces it: a Live Photo's still (Remove Motion), or an edited item's
-/// edited version alone (Keep Edited Version). Either way the version kept is the one Photos shows now, so
-/// an edit stays applied. Remove Motion drops every motion clip; Keep Edited Version keeps a Live Photo
-/// live, with its edited motion, and drops what lies under the edit.
+/// A lighter version of an item that replaces it: a Live Photo's still (Remove Motion), an edited item's
+/// edited version alone (Keep Edited Version), or a JPEG photo saved as HEIC (Convert to HEIC). The version
+/// kept is the one Photos shows now, so an edit stays applied. Remove Motion drops every motion clip; Keep
+/// Edited Version keeps a Live Photo live, with its edited motion, and drops what lies under the edit.
 enum Replacement: String, Identifiable {
-    case removeMotion, keepEdit
+    case removeMotion, keepEdit, convertToHEIC
 
     var id: String { rawValue }
 
-    var title: String { self == .removeMotion ? "Remove Motion" : "Keep Edited Version" }
+    var title: String {
+        switch self {
+        case .removeMotion: "Remove Motion"
+        case .keepEdit: "Keep Edited Version"
+        case .convertToHEIC: "Convert to HEIC"
+        }
+    }
 
-    /// Keep Edited Version needs a second file to free: a slow-motion video's edit, for one, is only a setting
-    /// Photos applies when playing it
     func applies(to item: Item) -> Bool {
-        self == .removeMotion ? item.live || item.hiddenMotion : item.edited && item.editedSize > 0
+        switch self {
+        case .removeMotion: item.live || item.hiddenMotion
+        // It needs a second file to free: a slow-motion video's edit, for one, is only a setting Photos applies
+        case .keepEdit: item.edited && item.editedSize > 0
+        // Live, edited and hidden-motion photos have replacements of their own, which keep what matters in them.
+        // A JPEG already compressed hard rarely gains (see Stills), and one refused before stays as it is.
+        case .convertToHEIC:
+            item.kind == .photo && item.isJPEG && !item.live && !item.edited && !item.hiddenMotion && !item.heicRefused
+                && Stills.bitsPerPixel(size: item.originalSize, pixels: item.width * item.height) >= Stills.minBitsPerPixel
+        }
+    }
+
+    /// Where the saved space is counted
+    var savingKind: Saving.Kind {
+        switch self {
+        case .removeMotion: .removedMotion
+        case .keepEdit: .keptEdit
+        case .convertToHEIC: .convertedToHEIC
+        }
+    }
+
+    /// The new item's files, written into `folder`
+    nonisolated func export(_ item: Item, to folder: URL) async throws -> Replacer.Entry {
+        switch self {
+        case .removeMotion, .keepEdit: try await Replacer.exportCurrent(item, to: folder, motion: keepsMotion(item))
+        case .convertToHEIC: try await Replacer.exportHEIC(item, to: folder)
+        }
     }
 
     /// Whether the new item is a Live Photo too
@@ -26,11 +56,21 @@ enum Replacement: String, Identifiable {
         self == .keepEdit && item.live
     }
 
-    /// Bytes freed: everything stored for the item, minus the files kept
+    /// Bytes freed: everything stored for the item, minus the files kept. A HEIC's size is known only once
+    /// converted, so before that it is the share measured on the library's JPEGs, refusals included.
     func saving(_ item: Item) -> Int64 {
-        let still = item.edited && item.editedSize > 0 ? item.editedSize : item.originalSize
-        let motion = keepsMotion(item) ? item.currentMotionSize : 0
-        return max(0, item.size - still - motion)
+        if self == .convertToHEIC {
+            let bits = Stills.bitsPerPixel(size: item.originalSize, pixels: item.width * item.height)
+            return Int64(Double(item.size) * Stills.expectedSaving(bitsPerPixel: bits))
+        }
+        return Self.saving(
+            size: item.size, original: item.originalSize, edited: item.edited && item.editedSize > 0 ? item.editedSize : nil,
+            keptMotion: keepsMotion(item) ? item.currentMotionSize : 0)
+    }
+
+    /// The same, apart from Item: the still kept is the edited one when there is one
+    nonisolated static func saving(size: Int64, original: Int64, edited: Int64?, keptMotion: Int64) -> Int64 {
+        max(0, size - (edited ?? original) - keptMotion)
     }
 
     /// Bytes freed by replacing those of `items` this applies to
@@ -135,8 +175,7 @@ enum Replacer {
 
     /// The Live Photo as Photos shows it, downloaded and rendered when needed
     nonisolated private static func currentLivePhoto(_ asset: PHAsset) async throws -> PHLivePhoto {
-        final class Once: @unchecked Sendable { var done = false }
-        let once = Once()
+        let answered = Locked(false)
         return try await withCheckedThrowingContinuation { continuation in
             let options = PHLivePhotoRequestOptions()
             options.version = .current
@@ -146,8 +185,9 @@ enum Replacer {
                 for: asset, targetSize: PHImageManagerMaximumSize, contentMode: .default, options: options
             ) { livePhoto, info in
                 // Only the full version, and only once
-                guard (info?[PHImageResultIsDegradedKey] as? Bool) != true, !once.done else { return }
-                once.done = true
+                guard (info?[PHImageResultIsDegradedKey] as? Bool) != true,
+                    answered.update({ answered in defer { answered = true }; return !answered })
+                else { return }
                 if let livePhoto {
                     continuation.resume(returning: livePhoto)
                 } else {
@@ -158,7 +198,7 @@ enum Replacer {
     }
 
     /// The id a Live Photo's still and motion share: in the still, Apple's maker note, key 17
-    nonisolated private static func stillPairingID(_ file: URL) -> String? {
+    nonisolated static func stillPairingID(_ file: URL) -> String? {
         guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
             let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
             let maker = properties[kCGImagePropertyMakerAppleDictionary as String] as? [String: Any]
@@ -171,6 +211,21 @@ enum Replacer {
         let metadata = (try? await AVURLAsset(url: file).load(.metadata)) ?? []
         let item = AVMetadataItem.metadataItems(from: metadata, filteredByIdentifier: .quickTimeMetadataContentIdentifier).first
         return try? await item?.load(.stringValue)
+    }
+
+    /// The photo as HEIC, checked against its JPEG (see Stills)
+    nonisolated static func exportHEIC(_ item: Item, to folder: URL) async throws -> Entry {
+        let jpeg = try await exportCurrent(item, to: folder)
+        let conversion: Stills.Conversion
+        do {
+            conversion = try Stills.heic(from: jpeg.file, to: jpeg.file.deletingPathExtension().appendingPathExtension("heic"))
+        } catch {
+            // A refused photo leaves nothing behind: a whole library of them would otherwise wait for the run's end
+            try? FileManager.default.removeItem(at: jpeg.file.deletingLastPathComponent())
+            throw error
+        }
+        try? FileManager.default.removeItem(at: jpeg.file)
+        return Entry(item: item, file: conversion.file, type: .photo, motion: nil)
     }
 
     /// Writes one of the item's files, named after the item (an edit's file is called FullSizeRender)
@@ -188,7 +243,9 @@ enum Replacer {
 
     /// Creates the new items and deletes the old ones in one change: macOS asks once for the batch, and if
     /// the deletion is refused nothing is created either, so no duplicates are left behind.
-    nonisolated static func replace(_ entries: [Entry]) async throws {
+    /// Returns the new items' ids, in the order of `entries`
+    nonisolated static func replace(_ entries: [Entry]) async throws -> [String?] {
+        let created = Locked<[String?]>([])
         let albums = entries.map {
             PHAssetCollection.fetchAssetCollectionsContaining($0.item.asset, with: .album, options: nil)
         }
@@ -207,14 +264,52 @@ enum Replacer {
                 request.creationDate = original.creationDate
                 request.location = original.location
                 request.isFavorite = original.isFavorite
-                guard let created = request.placeholderForCreatedAsset else { continue }
+                guard let placeholder = request.placeholderForCreatedAsset else {
+                    created.update { $0.append(nil) }
+                    continue
+                }
+                created.update { $0.append(placeholder.localIdentifier) }
                 itemAlbums.enumerateObjects { album, _, _ in
                     if album.canPerform(.addContent) {
-                        PHAssetCollectionChangeRequest(for: album)?.addAssets([created] as NSArray)
+                        PHAssetCollectionChangeRequest(for: album)?.addAssets([placeholder] as NSArray)
                     }
                 }
             }
             PHAssetChangeRequest.deleteAssets(entries.map(\.item.asset) as NSArray)
         }
+        return created.value
+    }
+
+    struct Check {
+        var freed: Int64 = 0
+        var warnings: [String] = []
+    }
+
+    /// Reads the new items back from Photos: what was freed is what the old items held minus what the new ones
+    /// hold, and a motion clip where none should be (or none where one should be) is reported. iCloud once
+    /// attached a Live Photo's motion back to a still saved byte for byte, which only this would have shown.
+    nonisolated static func check(_ entries: [Entry], created ids: [String?]) -> Check {
+        var check = Check()
+        var assets: [String: PHAsset] = [:]
+        PHAsset.fetchAssets(withLocalIdentifiers: ids.compactMap { $0 }, options: nil).enumerateObjects { asset, _, _ in
+            assets[asset.localIdentifier] = asset
+        }
+        for (entry, id) in zip(entries, ids) {
+            let resources = id.flatMap { assets[$0] }.map { PHAssetResource.assetResources(for: $0) } ?? []
+            let stored = resources.reduce(Int64(0)) { $0 + (($1.value(forKey: "fileSize") as? NSNumber)?.int64Value ?? 0) }
+            // A size Photos does not know yet: the files just handed to it
+            let kept = stored > 0 ? stored : fileSize(entry.file) + (entry.motion.map(fileSize) ?? 0)
+            check.freed += max(0, entry.item.size - kept)
+            let hasMotion = resources.contains { $0.type == .pairedVideo || $0.type == .fullSizePairedVideo }
+            if !resources.isEmpty, hasMotion != (entry.motion != nil) {
+                check.warnings.append(
+                    "\(entry.item.filename) (\(hasMotion ? "the new item still holds a motion clip" : "the new item lost its motion"))")
+            }
+        }
+        return check
+    }
+
+    nonisolated private static func fileSize(_ file: URL) -> Int64 {
+        ((try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? NSNumber)?.int64Value ?? 0
     }
 }

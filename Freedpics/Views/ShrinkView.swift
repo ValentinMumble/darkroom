@@ -75,8 +75,7 @@ struct ShrinkView: View {
                 }
                 .disabled(saving != nil)
                 Button(saving ?? "Save \(copies(chosen.count)) to Photos") { save(chosen) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(chosen.isEmpty || saving != nil)
+                    .prominent(when: !chosen.isEmpty && saving == nil)
             }
             .padding(.top, 6)
             Text(

@@ -28,19 +28,29 @@ Freedpics counts every file iCloud stores for an item, so the sizes it shows add
 |---|---|
 | Videos, Photos | everything, biggest first, with the size iCloud really stores |
 | Duplicates & Similar | exact copies first, which can all go in one click; then photos taken less than a minute apart that look alike, with the best one picked to keep |
+| Probably Accidental | photos that look taken by mistake (in a pocket, of the floor, a black or blurred frame), to look at and delete |
 | Live Photos | **Remove Motion**: each one becomes a still, with its edit, the same date, place, favorite and albums |
 | No People or Pets | Live Photos where Vision finds no person, face, cat or dog: the motion rarely matters there |
 | Hidden Motion | stills that still store a Live Photo's motion clip, which Photos no longer plays but iCloud still counts: Remove Motion frees it |
 | Edited | **Keep Edited Version**: the edited version alone replaces the item, and the original under it goes; a Live Photo stays live, with its edited motion |
 | Only Rotated | edits that only rotate an item (or change nothing), where the original is a full extra copy: same Keep Edited Version |
+| JPEG Photos | **Convert to HEIC**: lightly compressed JPEGs are saved again as HEIC, and the copy replaces the JPEG only when it is smaller and looks the same |
 | Screenshots | rarely worth keeping for long |
+| iCloud Drive | files in iCloud Drive and in apps' iCloud folders from 1 MB, biggest first, to move to the Trash or show in Finder |
 | Shrinking | re-encodes the videos you pick in Videos to a smaller file, keeping a copy only when it looks the same |
 | Favorites | what the name says |
 
 ![Duplicates & Similar](docs/duplicates-similar.png)
 
 Select items (click, Cmd-click, Shift-click, or right-click) to delete them, add them to Favorites, change
-their date or open them in Photos (double-click does that too). Deleted items stay in Recently Deleted for
+their date or open them in Photos (double-click does that too). The keyboard works too: the arrow keys move
+through the grid, Cmd-A selects everything shown, Space plays or pauses the video or Live Photo in the panel,
+Return opens the item in Photos, and M marks Live Photos for Remove Motion.
+
+Clicking "Saved with Freedpics" in the sidebar shows what each day saved, by kind of change, next to iCloud's
+free space read along the way. When shrinking or a replacement ends while you are in another app, a
+notification says how it went. The shrink queue survives quitting the app, and so do the hashes and Vision
+answers, so only new and edited photos are analysed again. Deleted items stay in Recently Deleted for
 30 days, where you can get them back, and they no longer count toward your iCloud storage: Apple says so in
 [Manage your iCloud storage](https://support.apple.com/108922), and on the library this was built on the free
 space rose as soon as items were deleted. So emptying Recently Deleted frees no iCloud space.
@@ -59,6 +69,9 @@ Needs macOS 26 or later and Xcode. Open `Freedpics.xcodeproj` and press Run, or 
 xcodebuild -project Freedpics.xcodeproj -scheme Freedpics -destination 'platform=macOS' -derivedDataPath build build
 open build/Build/Products/Debug/Freedpics.app
 ```
+
+The unit tests (Swift Testing) run with `xcodebuild test` and the same arguments. They cover the arithmetic
+and the file formats, and leave your library alone.
 
 Set your own `DEVELOPMENT_TEAM` and `PRODUCT_BUNDLE_IDENTIFIER` in the target's build settings first. On
 first launch macOS asks for access to Photos: choose Allow Full Access.
@@ -87,6 +100,12 @@ libvmaf. Everything else works without it.
   feature print was measured too and dropped: it calls two framings of the same view "very close", and
   those are both worth keeping. The keeper is a favorite or edited shot first, then the best Vision
   aesthetics score.
+- **Probably Accidental** asks Vision for each photo's aesthetics score (-1 to 1), once, and looks for a
+  person, face, cat or dog in those under -0.6 that are not documents or receipts. Only photos with nobody
+  in them are suggested, and never favorites or edited ones. On a 6,300-photo library that found 16, about
+  half plainly accidental. The other lowest scores were dark or blurred photos of friends, which is why
+  people rule a photo out. Darkness or blur alone did worse: they also catch the moon, city lights at night
+  and sunsets.
 - **Only Rotated** reads the edit Photos saves with each item: a property list around compressed JSON, whose
   adjustments (crop, light, filters…) can each be switched off. A rotation is kept apart from them, so an edit
   with every adjustment off only rotates, or changes nothing.
@@ -108,6 +127,28 @@ libvmaf. Everything else works without it.
   looks fine. Apple's
   own HEVC encoder was tried and made iPhone videos bigger at the same quality. Expect savings on some videos
   only: iPhone footage is already well compressed.
+- **Convert to HEIC** writes each JPEG again with ImageIO at quality 0.8, with its metadata. A HEIC replaces
+  its JPEG only when it saves at least 20% and scores 97 or more out of 100: structural similarity (SSIM) of
+  the grey pictures at 1024 pixels. JPEGs with an HDR gain map are left alone, since HEIC would drop that
+  layer. Whether a JPEG gains depends on how hard its camera compressed it: on 1,526 of the library's JPEGs
+  (mostly Pixel and OnePlus phones), those under 1.5 bits per pixel almost never passed (55 of 801, saving
+  1 to 5%), half passed from 1.5 to 4 (saving 20% of the lot), and nearly all above 4 (saving 55%). So only
+  JPEGs from 1.5 bits per pixel are listed, which kept 94% of the saving for half the work, the estimates
+  use those measured shares, and a refused photo is remembered (`heic-refused.json`) and not offered again.
+  The space freed is the size Photos reports for the new item once it exists, not the estimate.
+- **What was freed** is read back from Photos after each replacement: the new item's files, not the expected
+  size. iCloud's free space is also saved once an hour (`icloud-free.json`), so the history can set what
+  Freedpics counted against what iCloud really gained. It moves with everything else in iCloud too.
+- **iCloud Drive** reads `~/Library/Mobile Documents`, which iCloud keeps in step: iCloud Drive itself
+  (`com~apple~CloudDocs`) and one folder per app, named as Finder names them. Sizes are what iCloud stores,
+  read from each file's size, so files only in iCloud count too. An app's files under its `Documents` folder
+  are its iCloud Drive folder; anything else (WhatsApp's chat backup, for one) is the app's own data, listed
+  but deleted from the app. Move to Trash takes a file out of iCloud Drive on every device. macOS keeps some
+  files for the apps that made or opened them (the `com.apple.macl` mark, common on files that came from
+  elsewhere) and refuses to let other apps trash them; Freedpics then asks Finder, through `osascript`, and
+  macOS asks once whether it may control Finder. Apple says
+  files in iCloud Drive's Recently Deleted no longer count toward your storage
+  ([Delete files in iCloud Drive](https://support.apple.com/guide/icloud/mm3b7fcd0c10/icloud)).
 - **Open in Photos** uses a `photos-navigation://asset?uuid=` link. AppleScript's `spotlight` command
   crashes Photos on macOS 27.
 - The app is not sandboxed (it reads that cache and runs `brctl` and ffmpeg), with the hardened runtime and
@@ -125,16 +166,21 @@ libvmaf. Everything else works without it.
 
 | File | Role |
 |---|---|
-| `Freedpics/Model/Library.swift` | loading the library, the sizes cache, and every change |
+| `Freedpics/Model/Library.swift` | the library as the app shows it: items, counts, marks, saved space |
+| `Freedpics/Model/LibraryScan.swift` | reading the library, the exact copies and the sidebar counts |
+| `Freedpics/Model/Library+Changes.swift` | every change: deletions, favorites, dates, replacements |
 | `Freedpics/Model/Item.swift` | an item and the files behind it |
-| `Freedpics/Model/Similar.swift` | similar shots |
-| `Freedpics/Model/Replacer.swift` | Remove Motion and Keep Edited Version |
-| `Freedpics/Model/Shrinker.swift`, `FFmpeg.swift` | shrinking videos |
-| `Freedpics/Model/ICloudStorage.swift` | iCloud storage by app |
-| `Freedpics/Model/Savings.swift` | the space Freedpics freed, kept across launches |
+| `Freedpics/Model/Analysis.swift`, `Similar.swift`, `Subjects.swift`, `Accidental.swift` | similar shots and Vision, cached on disk |
+| `Freedpics/Model/Replacer.swift`, `Stills.swift` | Remove Motion, Keep Edited Version, Convert to HEIC |
+| `Freedpics/Model/Shrinker.swift`, `ShrinkPipeline.swift`, `ShrinkRecords.swift`, `FFmpeg.swift` | shrinking videos |
+| `Freedpics/Model/ICloudStorage.swift`, `RecentlyDeleted.swift` | iCloud storage by app, Recently Deleted |
+| `Freedpics/Model/ICloudDrive.swift` | the biggest files in iCloud Drive |
+| `Freedpics/Model/Savings.swift` | the space Freedpics freed and iCloud's free space, kept across launches |
+| `Freedpics/Model/Settings.swift` | the settings' names and the app's folders |
 | `Freedpics/Model/DateChange.swift` | date changes and reading dates from file names |
 | `Freedpics/Model/Destination.swift` | the sidebar entries and sort orders |
 | `Freedpics/Views/` | the SwiftUI views |
+| `FreedpicsTests/` | the unit tests |
 
 ## License
 

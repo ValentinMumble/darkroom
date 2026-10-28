@@ -5,134 +5,8 @@ import Photos
 
 private let log = Logger(subsystem: "com.valentinmumble.freedpics", category: "shrink")
 
-enum ShrinkPreset: String, CaseIterable, Identifiable, Codable {
-    case high, small
-
-    var id: String { rawValue }
-
-    // Measured on the library's videos: CRF 26 scores VMAF 95-96 on iPhone footage, CRF 28 scores 90-92
-    var crf: Int { self == .high ? 26 : 28 }
-    var defaultMinQuality: Double { self == .high ? 93 : 88 }
-
-    /// The score a copy needs to be kept: the default, or what was last set in the Shrink window
-    var minQuality: Double {
-        get { UserDefaults.standard.object(forKey: minQualityKey) as? Double ?? defaultMinQuality }
-        nonmutating set { UserDefaults.standard.set(newValue, forKey: minQualityKey) }
-    }
-
-    private var minQualityKey: String { "MinQuality.\(rawValue)" }
-
-    /// The preset last started from the Shrink window, which opens on it next time
-    static var last: ShrinkPreset {
-        get { UserDefaults.standard.string(forKey: "ShrinkPreset").flatMap(ShrinkPreset.init(rawValue:)) ?? .high }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "ShrinkPreset") }
-    }
-
-    var label: String { self == .high ? "High quality" : "Smaller files" }
-    var detail: String { self == .high ? "CRF 26, hard to tell apart" : "CRF 28, slightly softer" }
-}
-
-/// What happened to one video. Saved, so the app remembers across launches which videos were shrunk.
-struct ShrinkRecord: Codable, Identifiable {
-    /// Local identifier of the original
-    let original: String
-    let name: String
-    /// Local identifier of the copy in Photos, when one was kept
-    let copy: String?
-    /// Why the original was kept as it was
-    let kept: String?
-    let before: Int64
-    let after: Int64
-    let vmaf: Double?
-    /// The score the copy needed, as set when it was made: missing from older records
-    let minQuality: Double?
-    /// No copy went into Photos, but one waits aside to be compared: missing from older records
-    var keptAside: Bool? = nil
-    let preset: ShrinkPreset
-    let from: String
-    let to: String
-    let date: Date
-
-    var id: String { original }
-
-    /// "27 MB → 16 MB (−40%)"
-    var sizes: String {
-        let percent = Int(((Double(after) / Double(before)) - 1) * 100)
-        let change = percent > 0 ? "+\(percent)%" : "−\(-percent)%"
-        return "\(Format.bytes(before)) → \(Format.bytes(after)) (\(change))"
-    }
-
-    /// "27 MB → 16 MB (−40%), quality 95.3"
-    var summary: String {
-        sizes + (vmaf.map { ", quality \($0)" } ?? "")
-    }
-
-    var requiredQuality: Double { minQuality ?? preset.defaultMinQuality }
-
-    /// Refused for its quality score or its frame count, not its size, so the copy can be saved anyway (older
-    /// records kept aside only copies refused for their score)
-    var reviewable: Bool { copy == nil && (keptAside ?? (vmaf != nil)) }
-}
-
-/// The ids the sidebar and the skip rules need, taken from the saved records
-struct ShrinkStatus {
-    var shrunk: Set<String> = []
-    /// Each copy's original
-    var copies: [String: String] = [:]
-    var kept: Set<String> = []
-
-    init(records: [String: ShrinkRecord] = [:]) {
-        for record in records.values {
-            if let copy = record.copy {
-                shrunk.insert(record.original)
-                copies[copy] = record.original
-            } else {
-                kept.insert(record.original)
-            }
-        }
-    }
-}
-
-enum ShrinkRecords {
-    private static let file = FileManager.default.homeDirectoryForCurrentUser
-        .appending(path: "Library/Application Support/Freedpics/shrink.json")
-
-    static func load() -> [String: ShrinkRecord] {
-        guard let data = try? Data(contentsOf: file) else { return [:] }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode([String: ShrinkRecord].self, from: data)) ?? [:]
-    }
-
-    /// Where a copy refused for its quality waits until it is saved anyway or discarded: one folder per
-    /// video, so the file keeps the video's name
-    static func preview(original: String, name: String) -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appending(path: "Library/Caches/Freedpics/Previews")
-            .appending(path: original.replacingOccurrences(of: "/", with: "_"))
-            .appending(path: (name as NSString).deletingPathExtension + ".mov")
-    }
-
-    static func preview(_ record: ShrinkRecord) -> URL? {
-        let file = preview(original: record.original, name: record.name)
-        return record.reviewable && FileManager.default.fileExists(atPath: file.path) ? file : nil
-    }
-
-    static func discardPreview(_ record: ShrinkRecord) {
-        try? FileManager.default.removeItem(at: preview(original: record.original, name: record.name).deletingLastPathComponent())
-    }
-
-    static func save(_ records: [String: ShrinkRecord]) {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? encoder.encode(records).write(to: file)
-    }
-}
-
 /// Shrinks videos one at a time. Nothing is deleted here: the copies go into Photos next to the originals,
-/// and the Shrinking view deletes the originals when asked.
+/// and the Shrinking view deletes the originals when asked. The steps of one shrink are in ShrinkPipeline.
 @MainActor
 @Observable
 final class Shrinker {
@@ -185,10 +59,14 @@ final class Shrinker {
     /// Keep a copy only when it is at least this much smaller
     nonisolated static let minSaving = 0.2
 
-    private(set) var jobs: [Job] = []
+    private(set) var jobs: [Job] = [] {
+        didSet { saveQueue() }
+    }
     /// Videos deleted while they were being shrunk: their entry goes once the job stops
     @ObservationIgnored private var forgotten: Set<String> = []
     @ObservationIgnored private var worker: Task<Void, Never>?
+    /// The videos last written to the queue file, so it is written only when the queue changes
+    @ObservationIgnored private var savedQueue: [String] = []
     private let library: Library
 
     init(library: Library) {
@@ -200,6 +78,7 @@ final class Shrinker {
     func enqueue(_ items: [Item], preset: ShrinkPreset) {
         let busy = Set(jobs.filter(\.phase.active).map(\.item.id))
         jobs += items.filter { !busy.contains($0.id) && library.shrinkSkip($0) == nil }.map { Job(item: $0, preset: preset, minQuality: preset.minQuality) }
+        Notifier.ask()
         if worker == nil { worker = Task { await work() } }
     }
 
@@ -223,6 +102,7 @@ final class Shrinker {
 
     private func work() async {
         var ahead: [Download] = []
+        var finished: [UUID] = []
         while let job = jobs.first(where: { $0.phase == .queued }) {
             // Deleted while it waited, in Photos for one: nothing left to shrink
             guard library.itemsById[job.item.id] != nil else {
@@ -243,9 +123,25 @@ final class Shrinker {
                 ahead.append(startDownload(next))
             }
             await run(job, download)
+            finished.append(job.id)
         }
         for download in ahead { download.discard() }
         worker = nil
+        notifyDone(finished)
+    }
+
+    private func notifyDone(_ finished: [UUID]) {
+        let ids = Set(finished)
+        let ended = jobs.filter { ids.contains($0.id) }
+        guard !ended.isEmpty else { return }
+        let saved = ended.filter { $0.phase == .done }
+        let freed = saved.reduce(Int64(0)) { $0 + max(0, ($1.record?.before ?? 0) - ($1.record?.after ?? 0)) }
+        var parts = ["\(Format.count(saved.count, "video")) shrunk, \(Format.bytes(freed)) to free once the originals are deleted."]
+        let review = ended.filter { $0.record?.reviewable == true }.count
+        if review > 0 { parts.append("\(review) refused, to review in Shrinking.") }
+        let failed = ended.filter { $0.phase == .failed }.count
+        if failed > 0 { parts.append("\(failed) failed.") }
+        Notifier.post("Shrinking done", parts.joined(separator: " "))
     }
 
     private func startDownload(_ job: Job) -> Download {
@@ -322,99 +218,41 @@ final class Shrinker {
         log.notice("Saved \(record.name, privacy: .public) anyway: \(record.summary, privacy: .public)")
     }
 
+    // MARK: Queue across launches
+
+    private struct SavedJob: Codable {
+        let item: String
+        let preset: ShrinkPreset
+        let minQuality: Double
+    }
+
+    private static let queueFile = Settings.supportFolder.appending(path: "queue.json")
+
+    /// The waiting and running jobs, written whenever that list changes, so quitting the app keeps the queue
+    private func saveQueue() {
+        let active = jobs.filter(\.phase.active)
+        let ids = active.map(\.item.id)
+        guard ids != savedQueue else { return }
+        savedQueue = ids
+        let saved = active.map { SavedJob(item: $0.item.id, preset: $0.preset, minQuality: $0.minQuality) }
+        try? FileManager.default.createDirectory(at: Settings.supportFolder, withIntermediateDirectories: true)
+        try? JSONEncoder().encode(saved).write(to: Self.queueFile)
+    }
+
+    /// Puts back what a quit left in the queue, once the library has loaded. A video being shrunk then starts over.
+    func restoreQueue() {
+        guard let data = try? Data(contentsOf: Self.queueFile),
+            let saved = try? JSONDecoder().decode([SavedJob].self, from: data)
+        else { return }
+        let busy = Set(jobs.map(\.item.id))
+        jobs += saved.compactMap { job in
+            guard let item = library.itemsById[job.item], !busy.contains(item.id), library.shrinkSkip(item) == nil else { return nil }
+            return Job(item: item, preset: job.preset, minQuality: job.minQuality)
+        }
+        if worker == nil, jobs.contains(where: { $0.phase == .queued }) { worker = Task { await work() } }
+    }
+
     private func update(_ id: UUID, _ change: (inout Job) -> Void) {
         if let index = jobs.firstIndex(where: { $0.id == id }) { change(&jobs[index]) }
-    }
-
-    // MARK: Pipeline
-
-    nonisolated private static func shrink(
-        _ item: Item, source: URL, preset: ShrinkPreset, minQuality: Double, in folder: URL,
-        report: @escaping (Phase, Double) -> Void
-    ) async throws -> ShrinkRecord {
-        let original = try FFmpeg.probe(source)
-
-        report(.encoding, 0)
-        let outputFolder = folder.appending(path: "out")
-        try FileManager.default.createDirectory(at: outputFolder, withIntermediateDirectories: true)
-        let output = outputFolder.appending(path: source.deletingPathExtension().lastPathComponent + ".mov")
-        try FFmpeg.encode(source, to: output, crf: preset.crf, duration: original.duration) { report(.encoding, $0) }
-        let copy = try FFmpeg.probe(output)
-
-        let before = try fileSize(source)
-        let after = try fileSize(output)
-        func record(copy copyId: String? = nil, kept: String? = nil, vmaf: Double? = nil, aside: Bool = false) -> ShrinkRecord {
-            ShrinkRecord(
-                original: item.id, name: item.filename, copy: copyId, kept: kept, before: before, after: after,
-                vmaf: vmaf, minQuality: minQuality, keptAside: aside, preset: preset, from: original.summary,
-                to: copy.summary, date: .now)
-        }
-        // Refused, but worth a look: the copy waits until it is saved anyway or discarded
-        func keepAside() throws {
-            let preview = ShrinkRecords.preview(original: item.id, name: item.filename)
-            try? FileManager.default.removeItem(at: preview.deletingLastPathComponent())
-            try FileManager.default.createDirectory(at: preview.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try FileManager.default.moveItem(at: output, to: preview)
-        }
-        let saving = 1 - Double(after) / Double(before)
-        if after >= before {
-            return record(kept: "the copy is \(Int((Double(after) / Double(before) - 1) * 100))% bigger")
-        }
-        // One frame short is allowed: x265 sometimes drops the last one. Beyond that the quality check cannot
-        // pair the frames, so the copy waits for a look instead
-        if abs(copy.frames - original.frames) > 1 {
-            try keepAside()
-            return record(
-                kept: "it has \(copy.frames) frames instead of \(original.frames), so its quality could not be measured", aside: true)
-        }
-
-        report(.checking, 1)
-        let score = try FFmpeg.vmaf(output, against: source)
-        // Too small a saving to be worth a copy on its own, but still smaller: the copy waits for a look
-        if saving < minSaving {
-            try keepAside()
-            return record(kept: "the copy saves only \(Int(saving * 100))%", vmaf: score, aside: true)
-        }
-        if score < minQuality {
-            try keepAside()
-            return record(kept: "the copy would look softer (quality \(score), below \(Int(minQuality)))", vmaf: score, aside: true)
-        }
-
-        report(.importing, 1)
-        // Deleted while it was being shrunk: a copy would be an orphan
-        guard PHAsset.fetchAssets(withLocalIdentifiers: [item.id], options: nil).count > 0 else {
-            throw FFmpeg.Failure(message: "the original was deleted meanwhile, so no copy was saved")
-        }
-        let copyId = try await importCopy(output, like: item.asset)
-        return record(copy: copyId, vmaf: score)
-    }
-
-    /// Saves the copy with the original's date, place and favorite, in the same albums
-    nonisolated private static func importCopy(_ file: URL, like original: PHAsset) async throws -> String {
-        final class Placeholder: @unchecked Sendable { var id: String? }
-        let placeholder = Placeholder()
-        let albums = PHAssetCollection.fetchAssetCollectionsContaining(original, with: .album, options: nil)
-        try await PHPhotoLibrary.shared().performChanges {
-            let request = PHAssetCreationRequest.forAsset()
-            let options = PHAssetResourceCreationOptions()
-            options.originalFilename = file.lastPathComponent
-            request.addResource(with: .video, fileURL: file, options: options)
-            request.creationDate = original.creationDate
-            request.location = original.location
-            request.isFavorite = original.isFavorite
-            guard let created = request.placeholderForCreatedAsset else { return }
-            placeholder.id = created.localIdentifier
-            albums.enumerateObjects { album, _, _ in
-                if album.canPerform(.addContent) {
-                    PHAssetCollectionChangeRequest(for: album)?.addAssets([created] as NSArray)
-                }
-            }
-        }
-        guard let id = placeholder.id else { throw FFmpeg.Failure(message: "Photos did not save the copy") }
-        return id
-    }
-
-    nonisolated private static func fileSize(_ file: URL) throws -> Int64 {
-        (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
     }
 }

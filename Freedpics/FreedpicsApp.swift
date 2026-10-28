@@ -2,8 +2,12 @@ import SwiftUI
 
 @main
 struct FreedpicsApp: App {
+    /// The unit tests run inside the app: it then leaves the library alone
+    static let isTesting = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
     @State private var library: Library
     @State private var shrinker: Shrinker
+    @AppStorage(Settings.Key.thumbnailSize.rawValue) private var thumbnailSize = GridView.defaultCardWidth
 
     init() {
         let library = Library()
@@ -23,6 +27,11 @@ struct FreedpicsApp: App {
             CommandGroup(after: .toolbar) {
                 Button("Reload Library") { Task { await library.reload() } }
                     .keyboardShortcut("r")
+                Divider()
+                Button("Bigger Thumbnails") { thumbnailSize = min(GridView.cardWidths.upperBound, thumbnailSize + 50) }
+                    .keyboardShortcut("+")
+                Button("Smaller Thumbnails") { thumbnailSize = max(GridView.cardWidths.lowerBound, thumbnailSize - 50) }
+                    .keyboardShortcut("-")
             }
         }
     }

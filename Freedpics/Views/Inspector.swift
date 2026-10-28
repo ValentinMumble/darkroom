@@ -63,6 +63,9 @@ struct ItemMenu: View {
         if items.contains(where: Replacement.keepEdit.applies) {
             Button("Keep Edited Version Only…") { actions.replace(items, .keepEdit) }
         }
+        if items.contains(where: Replacement.convertToHEIC.applies) {
+            Button("Convert to HEIC…") { actions.replace(items, .convertToHEIC) }
+        }
         Divider()
         Button(items.count == 1 ? "Delete…" : "Delete \(items.count) Items…", role: .destructive) {
             actions.delete(items)
@@ -103,6 +106,11 @@ struct ActionButtons: View {
                     actions.replace(items, .keepEdit)
                 }
             }
+            if items.contains(where: Replacement.convertToHEIC.applies) {
+                Button("Convert to HEIC (about −\(Format.bytes(Replacement.convertToHEIC.saving(of: items))))…", systemImage: "photo.badge.arrow.down") {
+                    actions.replace(items, .convertToHEIC)
+                }
+            }
             Button("Delete…", systemImage: "trash", role: .destructive) { actions.delete(items) }
         }
         .buttonStyle(.borderless)
@@ -113,7 +121,7 @@ struct ItemDetail: View {
     let item: Item
     let actions: Actions
     @Environment(Library.self) private var library
-    @AppStorage("BlurPhotos") private var blurPhotos = false
+    @AppStorage(Settings.Key.blurPhotos.rawValue) private var blurPhotos = false
     @State private var showOriginal = false
 
     /// The shrink result, seen from this video: the original or its copy
@@ -176,9 +184,10 @@ struct ItemDetail: View {
                     }
                     if item.live { Fact("Live Photo", "yes, \(Format.bytes(item.motionSize)) of motion. Point at the photo to play it") }
                     // An edited Live Photo can do both: Remove Motion frees more, Keep Edited Version keeps it live
-                    let choices = [Replacement.removeMotion, .keepEdit].filter { $0.applies(to: item) && $0.saving(item) > 0 }
+                    let choices = [Replacement.removeMotion, .keepEdit, .convertToHEIC].filter { $0.applies(to: item) && $0.saving(item) > 0 }
                     if !choices.isEmpty {
-                        Fact("Could free", choices.map { "\(Format.bytes($0.saving(item))) with \($0.title)" }.joined(separator: ", or "))
+                        // A HEIC's size is only an estimate until converted
+                        Fact("Could free", choices.map { "\($0 == .convertToHEIC ? "about " : "")\(Format.bytes($0.saving(item))) with \($0.title)" }.joined(separator: ", or "))
                     }
                     if let record = library.shrinkRecord(item) { Fact("Shrunk", shrinkFact(record)) }
                     if let location = item.location, !blurPhotos {
@@ -217,13 +226,18 @@ private struct Fact: View {
     }
 }
 
+extension Notification.Name {
+    /// Space pressed: the video or Live Photo in the panel plays or pauses
+    static let togglePlayback = Notification.Name("togglePlayback")
+}
+
 /// Plays a video, streaming it from iCloud when it is not on this Mac.
 struct VideoPreview: View {
     let asset: PHAsset
     /// The video as filmed, before any edit
     var original = false
     @State private var player: AVPlayer?
-    @AppStorage("BlurPhotos") private var blurPhotos = false
+    @AppStorage(Settings.Key.blurPhotos.rawValue) private var blurPhotos = false
 
     var body: some View {
         Group {
@@ -237,10 +251,16 @@ struct VideoPreview: View {
             player = nil
             player = await Self.player(for: asset, original: original)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .togglePlayback)) { _ in
+            guard let player else { return }
+            if player.rate == 0 { player.play() } else { player.pause() }
+        }
     }
 
-    /// `.automatic` may stream a lighter version; `.highQualityFormat` waits for the full one
-    static func player(
+    /// `.automatic` may stream a lighter version; `.highQualityFormat` waits for the full one. Photos answers
+    /// on a queue of its own, so this must not run on the main actor: Swift 6 stops the app when a main actor
+    /// closure runs elsewhere.
+    nonisolated static func player(
         for asset: PHAsset, deliveryMode: PHVideoRequestOptionsDeliveryMode = .automatic, original: Bool = false
     ) async -> AVPlayer? {
         await withCheckedContinuation { continuation in
@@ -262,7 +282,7 @@ struct LivePhotoPreview: View {
     var original = false
     @State private var livePhoto: PHLivePhoto?
     @State private var playing = false
-    @AppStorage("BlurPhotos") private var blurPhotos = false
+    @AppStorage(Settings.Key.blurPhotos.rawValue) private var blurPhotos = false
 
     var body: some View {
         Group {
@@ -276,11 +296,13 @@ struct LivePhotoPreview: View {
         }
         .task(id: "\(asset.localIdentifier)-\(original)") {
             livePhoto = nil
-            livePhoto = await load()
+            livePhoto = await Self.load(asset, original: original)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .togglePlayback)) { _ in playing.toggle() }
     }
 
-    private func load() async -> PHLivePhoto? {
+    /// Off the main actor, like VideoPreview.player
+    nonisolated private static func load(_ asset: PHAsset, original: Bool) async -> PHLivePhoto? {
         await withCheckedContinuation { continuation in
             let options = PHLivePhotoRequestOptions()
             options.isNetworkAccessAllowed = true
