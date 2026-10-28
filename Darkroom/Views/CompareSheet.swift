@@ -26,8 +26,8 @@ struct CompareSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("\(record.name): original or copy?").font(.title2.weight(.semibold))
             Text(
-                (record.vmaf.map { "The copy is \(record.sizes) and scored \($0) on the quality check, below \(Int(record.requiredQuality))." }
-                    ?? "The copy is \(record.sizes), but \(record.kept ?? "it was refused"): play both through, a missing frame shows as a small jump.")
+                "The copy is \(record.summary), and was refused: \(record.kept ?? "no reason recorded")."
+                    + (record.vmaf == nil ? " Play both through: a missing frame shows as a small jump." : "")
                     + " Pause on a frame and switch between the two: the difference shows first in fine detail like grass, leaves, hair or water."
             )
             .foregroundStyle(.secondary)

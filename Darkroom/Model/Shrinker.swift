@@ -180,6 +180,8 @@ final class Shrinker {
     nonisolated static let minSaving = 0.2
 
     private(set) var jobs: [Job] = []
+    /// Videos deleted while they were being shrunk: their entry goes once the job stops
+    @ObservationIgnored private var forgotten: Set<String> = []
     @ObservationIgnored private var worker: Task<Void, Never>?
     private let library: Library
 
@@ -199,33 +201,44 @@ final class Shrinker {
         for index in jobs.indices where jobs[index].phase == .queued { jobs[index].phase = .cancelled }
     }
 
+    /// Deleted videos leave the list: waiting or finished ones at once, the one being shrunk when it stops
+    func forget(_ items: [Item]) {
+        let ids = Set(items.map(\.id))
+        forgotten.formUnion(ids)
+        jobs.removeAll { ids.contains($0.item.id) && ($0.phase == .queued || !$0.phase.active) }
+    }
+
     func clearFinished() {
         jobs.removeAll { !$0.phase.active }
     }
 
+    /// Videos downloaded ahead of their turn
+    private static let downloadsAhead = 2
+
     private func work() async {
-        var ahead: Download?
+        var ahead: [Download] = []
         while let job = jobs.first(where: { $0.phase == .queued }) {
-            // Deleted while it waited: nothing left to shrink
+            // Deleted while it waited, in Photos for one: nothing left to shrink
             guard library.itemsById[job.item.id] != nil else {
-                update(job.id) { job in
-                    job.phase = .cancelled
-                    job.error = "The original was deleted"
-                }
+                jobs.removeAll { $0.id == job.id }
                 continue
             }
             let download: Download
-            if let ahead, ahead.jobId == job.id {
-                download = ahead
+            if let index = ahead.firstIndex(where: { $0.jobId == job.id }) {
+                download = ahead.remove(at: index)
             } else {
-                ahead?.discard()
                 download = startDownload(job)
             }
-            // The next video downloads while this one is shrunk, so it is ready when its turn comes
-            ahead = jobs.first { $0.phase == .queued && $0.id != job.id }.map(startDownload)
+            // The next videos download while this one is shrunk, so each is ready when its turn comes
+            let upcoming = Set(jobs.filter { $0.phase == .queued && $0.id != job.id }.prefix(Self.downloadsAhead).map(\.id))
+            for stale in ahead where !upcoming.contains(stale.jobId) { stale.discard() }
+            ahead.removeAll { !upcoming.contains($0.jobId) }
+            for next in jobs where upcoming.contains(next.id) && !ahead.contains(where: { $0.jobId == next.id }) {
+                ahead.append(startDownload(next))
+            }
             await run(job, download)
         }
-        ahead?.discard()
+        for download in ahead { download.discard() }
         worker = nil
     }
 
@@ -276,6 +289,11 @@ final class Shrinker {
             }
         } catch {
             log.error("Shrink failed for \(job.item.filename, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            // Deleted from here while it was being shrunk: the entry goes with it
+            if forgotten.contains(job.item.id) {
+                jobs.removeAll { $0.id == id }
+                return
+            }
             update(id) { job in
                 job.phase = .failed
                 job.error = error.localizedDescription
@@ -336,9 +354,6 @@ final class Shrinker {
         if after >= before {
             return record(kept: "the copy is \(Int((Double(after) / Double(before) - 1) * 100))% bigger")
         }
-        if saving < minSaving {
-            return record(kept: "the copy saves only \(Int(saving * 100))%")
-        }
         // One frame short is allowed: x265 sometimes drops the last one. Beyond that the quality check cannot
         // pair the frames, so the copy waits for a look instead
         if abs(copy.frames - original.frames) > 1 {
@@ -349,6 +364,11 @@ final class Shrinker {
 
         report(.checking, 1)
         let score = try FFmpeg.vmaf(output, against: source)
+        // Too small a saving to be worth a copy on its own, but still smaller: the copy waits for a look
+        if saving < minSaving {
+            try keepAside()
+            return record(kept: "the copy saves only \(Int(saving * 100))%", vmaf: score, aside: true)
+        }
         if score < minQuality {
             try keepAside()
             return record(kept: "the copy would look softer (quality \(score), below \(Int(minQuality)))", vmaf: score, aside: true)

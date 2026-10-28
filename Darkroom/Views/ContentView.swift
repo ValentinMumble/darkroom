@@ -55,7 +55,12 @@ struct ContentView: View {
             },
             changeDate: { items in dateRequest = DateRequest(items: items) },
             setFavorite: { items, favorite in Task { await library.setFavorite(items, favorite) } },
-            delete: { items in Task { await library.delete(items) } },
+            delete: { items in
+                Task {
+                    // A deleted video leaves the shrink list too
+                    if await library.delete(items) { shrinker.forget(items) }
+                }
+            },
             shrink: { items in shrinkRequest = ShrinkRequest(items: items) },
             replace: { items, kind in replaceRequest = ReplaceRequest(items: items, kind: kind) }
         )

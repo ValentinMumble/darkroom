@@ -232,14 +232,17 @@ final class Library {
     // MARK: Changes
 
     /// Deletes for real: macOS asks for confirmation, and the items go to Recently Deleted for 30 days.
-    func delete(_ targets: [Item]) async {
+    /// Whether they were deleted: macOS's confirmation can be refused
+    @discardableResult
+    func delete(_ targets: [Item]) async -> Bool {
         let assets = targets.map(\.asset) as NSArray
-        guard await change({ PHAssetChangeRequest.deleteAssets(assets) }) else { return }
+        guard await change({ PHAssetChangeRequest.deleteAssets(assets) }) else { return false }
         // A shrunk original frees only what its copy does not take back
         let shrunk = targets.filter { shrinkRecords[$0.id]?.copy != nil }
         let others = targets.filter { shrinkRecords[$0.id]?.copy == nil }
         addSaving(.shrunk, shrunk.count, shrunk.reduce(0) { $0 + max(0, $1.size - (shrinkRecords[$1.id]?.after ?? 0)) })
         addSaving(.deleted, others.count, others.reduce(0) { $0 + $1.size })
+        return true
     }
 
     func setFavorite(_ targets: [Item], _ favorite: Bool) async {
