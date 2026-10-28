@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct DarkroomApp: App {
+struct FreedpicsApp: App {
     @State private var library: Library
     @State private var shrinker: Shrinker
 

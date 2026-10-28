@@ -10,8 +10,16 @@ struct ShrinkSheet: View {
     let onStart: ([Item], ShrinkPreset) -> Void
     @Environment(Library.self) private var library
     @Environment(\.dismiss) private var dismiss
-    @State private var preset = ShrinkPreset.high
-    @State private var minQuality = ShrinkPreset.high.minQuality
+    @State private var preset: ShrinkPreset
+    @State private var minQuality: Double
+
+    init(items: [Item], onStart: @escaping ([Item], ShrinkPreset) -> Void) {
+        self.items = items
+        self.onStart = onStart
+        let last = ShrinkPreset.last
+        _preset = State(initialValue: last)
+        _minQuality = State(initialValue: last.minQuality)
+    }
 
     var body: some View {
         let eligible = items.filter { library.shrinkSkip($0) == nil }
@@ -63,6 +71,7 @@ struct ShrinkSheet: View {
                 Button("Start") {
                     // Saved first: each job reads it when queued
                     preset.minQuality = minQuality
+                    ShrinkPreset.last = preset
                     onStart(eligible, preset)
                     dismiss()
                 }

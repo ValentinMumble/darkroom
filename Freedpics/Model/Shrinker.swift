@@ -3,7 +3,7 @@ import Observation
 import os
 import Photos
 
-private let log = Logger(subsystem: "com.valentinmumble.darkroom", category: "shrink")
+private let log = Logger(subsystem: "com.valentinmumble.freedpics", category: "shrink")
 
 enum ShrinkPreset: String, CaseIterable, Identifiable, Codable {
     case high, small
@@ -21,6 +21,12 @@ enum ShrinkPreset: String, CaseIterable, Identifiable, Codable {
     }
 
     private var minQualityKey: String { "MinQuality.\(rawValue)" }
+
+    /// The preset last started from the Shrink window, which opens on it next time
+    static var last: ShrinkPreset {
+        get { UserDefaults.standard.string(forKey: "ShrinkPreset").flatMap(ShrinkPreset.init(rawValue:)) ?? .high }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "ShrinkPreset") }
+    }
 
     var label: String { self == .high ? "High quality" : "Smaller files" }
     var detail: String { self == .high ? "CRF 26, hard to tell apart" : "CRF 28, slightly softer" }
@@ -89,7 +95,7 @@ struct ShrinkStatus {
 
 enum ShrinkRecords {
     private static let file = FileManager.default.homeDirectoryForCurrentUser
-        .appending(path: "Library/Application Support/Darkroom/shrink.json")
+        .appending(path: "Library/Application Support/Freedpics/shrink.json")
 
     static func load() -> [String: ShrinkRecord] {
         guard let data = try? Data(contentsOf: file) else { return [:] }
@@ -102,7 +108,7 @@ enum ShrinkRecords {
     /// video, so the file keeps the video's name
     static func preview(original: String, name: String) -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appending(path: "Library/Caches/Darkroom/Previews")
+            .appending(path: "Library/Caches/Freedpics/Previews")
             .appending(path: original.replacingOccurrences(of: "/", with: "_"))
             .appending(path: (name as NSString).deletingPathExtension + ".mov")
     }
@@ -245,7 +251,7 @@ final class Shrinker {
     private func startDownload(_ job: Job) -> Download {
         let id = job.id
         let item = job.item
-        let folder = FileManager.default.temporaryDirectory.appending(path: "darkroom-\(UUID().uuidString)")
+        let folder = FileManager.default.temporaryDirectory.appending(path: "freedpics-\(UUID().uuidString)")
         let file = Task.detached(priority: .utility) {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             // The video as Photos shows it, so an edited one (rotated, trimmed) keeps its edit in the copy

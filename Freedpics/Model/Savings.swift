@@ -1,6 +1,6 @@
 import Foundation
 
-/// Space one change made with Darkroom freed. Saved, so the total survives across launches.
+/// Space one change made with Freedpics freed. Saved, so the total survives across launches.
 struct Saving: Codable {
     enum Kind: String, Codable, CaseIterable {
         case deleted, removedMotion, keptEdit, shrunk
@@ -31,7 +31,7 @@ struct Saving: Codable {
 
 enum Savings {
     private static let file = FileManager.default.homeDirectoryForCurrentUser
-        .appending(path: "Library/Application Support/Darkroom/savings.json")
+        .appending(path: "Library/Application Support/Freedpics/savings.json")
 
     static func load() -> [Saving] {
         guard let data = try? Data(contentsOf: file) else { return [] }

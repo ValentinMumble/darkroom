@@ -9,7 +9,7 @@ struct Thumbnail: View {
     /// The picture as taken, before any edit
     var original = false
     @State private var image: NSImage?
-    /// For screenshots of the app: `defaults write com.valentinmumble.darkroom BlurPhotos -bool YES`
+    /// For screenshots of the app: `defaults write com.valentinmumble.freedpics BlurPhotos -bool YES`
     @AppStorage("BlurPhotos") private var blurPhotos = false
 
     var body: some View {

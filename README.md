@@ -1,4 +1,4 @@
-# Darkroom 📸
+# Freedpics 📸
 
 A Mac app to see what fills your iCloud Photos, and to clean it up. It shows what each photo and video
 really costs in iCloud, finds duplicates and near-identical shots, strips the motion from Live Photos,
@@ -20,7 +20,7 @@ iCloud says "Photos: 35 GB" and nothing more. Most of it is rarely the photos th
 - **Videos** are usually the biggest items by far, and a few are worth re-encoding.
 - **Bursts and retakes**: several shots of the same moment.
 
-Darkroom counts every file iCloud stores for an item, so the sizes it shows add up to what iCloud bills.
+Freedpics counts every file iCloud stores for an item, so the sizes it shows add up to what iCloud bills.
 
 ## What it does
 
@@ -52,11 +52,11 @@ date, shift by an amount, or read the date from the file name (`%Y%m%d_%H%M%S` r
 
 ## Install
 
-Needs macOS 26 or later and Xcode. Open `Darkroom.xcodeproj` and press Run, or from the terminal:
+Needs macOS 26 or later and Xcode. Open `Freedpics.xcodeproj` and press Run, or from the terminal:
 
 ```
-xcodebuild -project Darkroom.xcodeproj -scheme Darkroom -destination 'platform=macOS' -derivedDataPath build build
-open build/Build/Products/Debug/Darkroom.app
+xcodebuild -project Freedpics.xcodeproj -scheme Freedpics -destination 'platform=macOS' -derivedDataPath build build
+open build/Build/Products/Debug/Freedpics.app
 ```
 
 Set your own `DEVELOPMENT_TEAM` and `PRODUCT_BUNDLE_IDENTIFIER` in the target's build settings first. On
@@ -74,11 +74,11 @@ libvmaf. Everything else works without it.
   quota service in `~/Library/Caches/com.apple.iCloudNotificationAgent/Cache.db`, among them
   `getCloudStorageApps`: the numbers System Settings shows. The plan size follows from the share of the plan
   each app takes, and `brctl quota` gives the free space live, every minute. macOS refreshes the split by app
-  only now and then, so the sidebar also shows what was freed since, and a running total of what Darkroom
-  itself freed, kept across launches in `~/Library/Application Support/Darkroom/savings.json`. iCloud counts in powers of 1024
+  only now and then, so the sidebar also shows what was freed since, and a running total of what Freedpics
+  itself freed, kept across launches in `~/Library/Application Support/Freedpics/savings.json`. iCloud counts in powers of 1024
   (37,472,142,715 bytes show as "34.9 GB"), so the app does too.
 - **Recently Deleted**: PhotoKit never shows deleted items to other apps, even through its private options, so
-  Darkroom reads their count and size from Photos' own database, read-only. macOS allows that only with Full
+  Freedpics reads their count and size from Photos' own database, read-only. macOS allows that only with Full
   Disk Access; without it, the sidebar offers to open the setting.
 - **Similar shots** compare a 64-bit difference hash of a small render: one bit per pixel of a 9x8 grey
   thumbnail, set when it is brighter than its right neighbour. On a 7,000-item library, shots of the same
@@ -100,7 +100,7 @@ libvmaf. Everything else works without it.
   (100 = identical). VMAF pairs frames by index: iPhone videos have an uneven frame rate, and pairing them by
   timestamp scores a perfect copy around 45. The copy goes into Photos only when it is at least 20% smaller
   and scores 93 or more (88 for "Smaller files"; the Shrink window changes that bar, remembered per preset); the originals go when you press Delete Originals. A copy
-  refused only for its score waits in `~/Library/Caches/Darkroom/Previews`: the Shrinking view plays it and
+  refused only for its score waits in `~/Library/Caches/Freedpics/Previews`: the Shrinking view plays it and
   the original in one player that switches between the two at the same moment, and saves it anyway if it
   looks fine. Apple's
   own HEVC encoder was tried and made iPhone videos bigger at the same quality. Expect savings on some videos
@@ -122,16 +122,16 @@ libvmaf. Everything else works without it.
 
 | File | Role |
 |---|---|
-| `Darkroom/Model/Library.swift` | loading the library, the sizes cache, and every change |
-| `Darkroom/Model/Item.swift` | an item and the files behind it |
-| `Darkroom/Model/Similar.swift` | similar shots |
-| `Darkroom/Model/Replacer.swift` | Remove Motion and Keep Edited Version |
-| `Darkroom/Model/Shrinker.swift`, `FFmpeg.swift` | shrinking videos |
-| `Darkroom/Model/ICloudStorage.swift` | iCloud storage by app |
-| `Darkroom/Model/Savings.swift` | the space Darkroom freed, kept across launches |
-| `Darkroom/Model/DateChange.swift` | date changes and reading dates from file names |
-| `Darkroom/Model/Destination.swift` | the sidebar entries and sort orders |
-| `Darkroom/Views/` | the SwiftUI views |
+| `Freedpics/Model/Library.swift` | loading the library, the sizes cache, and every change |
+| `Freedpics/Model/Item.swift` | an item and the files behind it |
+| `Freedpics/Model/Similar.swift` | similar shots |
+| `Freedpics/Model/Replacer.swift` | Remove Motion and Keep Edited Version |
+| `Freedpics/Model/Shrinker.swift`, `FFmpeg.swift` | shrinking videos |
+| `Freedpics/Model/ICloudStorage.swift` | iCloud storage by app |
+| `Freedpics/Model/Savings.swift` | the space Freedpics freed, kept across launches |
+| `Freedpics/Model/DateChange.swift` | date changes and reading dates from file names |
+| `Freedpics/Model/Destination.swift` | the sidebar entries and sort orders |
+| `Freedpics/Views/` | the SwiftUI views |
 
 ## License
 

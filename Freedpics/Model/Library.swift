@@ -2,7 +2,7 @@ import Observation
 import os
 import Photos
 
-private let log = Logger(subsystem: "com.valentinmumble.darkroom", category: "library")
+private let log = Logger(subsystem: "com.valentinmumble.freedpics", category: "library")
 
 /// The Photos library as the app shows it, and every change the app makes to it.
 @MainActor
@@ -294,7 +294,7 @@ final class Library {
     /// many items are done.
     func replace(_ targets: [Item], kind: Replacement, progress: @escaping (String, Int) -> Void) async -> ReplaceOutcome {
         var outcome = ReplaceOutcome()
-        let folder = FileManager.default.temporaryDirectory.appending(path: "darkroom-\(UUID().uuidString)")
+        let folder = FileManager.default.temporaryDirectory.appending(path: "freedpics-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: folder) }
         var done = 0
         for start in stride(from: 0, to: targets.count, by: Self.replaceBatch) {

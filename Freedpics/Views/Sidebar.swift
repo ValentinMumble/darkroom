@@ -141,7 +141,7 @@ struct StorageView: View {
             if !library.savings.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.circle").frame(width: 8)
-                    Text("Saved with Darkroom")
+                    Text("Saved with Freedpics")
                     Spacer()
                     Text(Format.bytes(library.savings.reduce(0) { $0 + $1.bytes })).foregroundStyle(.green)
                 }
@@ -168,7 +168,7 @@ struct StorageView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help(
-                    "Photos hides deleted items from other apps, so Darkroom reads Photos' own database for this. Click to open System Settings, then turn on Darkroom under Full Disk Access."
+                    "Photos hides deleted items from other apps, so Freedpics reads Photos' own database for this. Click to open System Settings, then turn on Freedpics under Full Disk Access."
                 )
             default:
                 EmptyView()
@@ -181,7 +181,7 @@ struct StorageView: View {
                 Text("By app as of \(Format.time(fetchedAt))\(change)")
                     .foregroundStyle(.tertiary)
                     .help(
-                        "macOS fetches the split by app from Apple now and then. The free space is read every minute, so what changed since covers everything in iCloud, not only Darkroom."
+                        "macOS fetches the split by app from Apple now and then. The free space is read every minute, so what changed since covers everything in iCloud, not only Freedpics."
                     )
             }
         }

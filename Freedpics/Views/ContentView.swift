@@ -165,7 +165,7 @@ struct ContentView: View {
         case .denied:
             ContentUnavailableView(
                 "No access to Photos", systemImage: "lock",
-                description: Text("Allow Darkroom in System Settings › Privacy & Security › Photos, then open it again."))
+                description: Text("Allow Freedpics in System Settings › Privacy & Security › Photos, then open it again."))
         case .loading(let done, let total):
             ProgressView(value: Double(done), total: Double(max(total, 1))) {
                 Text("Reading \(total.formatted()) items from Photos…")
