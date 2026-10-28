@@ -39,7 +39,7 @@ struct Sidebar: View {
         if entry == .lifeless && library.lifeless == nil { return "" }
         guard let tally = library.tallies[entry], tally.count > 0 else { return "0" }
         // Where a replacement applies, what it would free matters more than the size
-        if entry == .live || entry == .lifeless || entry == .edited || entry == .rotated {
+        if entry == .live || entry == .lifeless || entry == .hiddenMotion || entry == .edited || entry == .rotated {
             return "\(tally.count.formatted()) · −\(Format.bytes(tally.saving))"
         }
         return "\(tally.count.formatted()) · \(Format.bytes(tally.size))"

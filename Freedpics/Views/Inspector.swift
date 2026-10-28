@@ -54,7 +54,7 @@ struct ItemMenu: View {
         if items.contains(where: { $0.kind == .video }) {
             Button("Shrink…") { actions.shrink(items) }
         }
-        if items.contains(where: \.live) {
+        if items.contains(where: Replacement.removeMotion.applies) {
             Button("Remove Motion…") { actions.replace(items, .removeMotion) }
             Button(items.filter(\.live).allSatisfy { library.marked.contains($0.id) } ? "Unmark (M)" : "Mark for Remove Motion (M)") {
                 library.toggleMark(items)
@@ -88,7 +88,7 @@ struct ActionButtons: View {
             if items.contains(where: { $0.kind == .video }) {
                 Button("Shrink…", systemImage: "arrow.down.right.and.arrow.up.left") { actions.shrink(items) }
             }
-            if items.contains(where: \.live) {
+            if items.contains(where: Replacement.removeMotion.applies) {
                 Button("Remove Motion (−\(Format.bytes(Replacement.removeMotion.saving(of: items))))…", systemImage: "livephoto.slash") {
                     actions.replace(items, .removeMotion)
                 }
@@ -170,6 +170,9 @@ struct ItemDetail: View {
                         Fact("Edited", item.onlyRotated
                                 ? "only rotated, or not changed at all: the original is a full extra copy"
                                 : item.editedSize > 0 ? "yes, iCloud keeps both versions" : "yes, as a setting Photos applies when showing it, with no second file")
+                    }
+                    if item.hiddenMotion {
+                        Fact("Motion", "a \(Format.bytes(item.motionSize)) clip Photos no longer plays, still counted by iCloud")
                     }
                     if item.live { Fact("Live Photo", "yes, \(Format.bytes(item.motionSize)) of motion. Point at the photo to play it") }
                     // An edited Live Photo can do both: Remove Motion frees more, Keep Edited Version keeps it live

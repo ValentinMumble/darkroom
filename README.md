@@ -30,6 +30,7 @@ Freedpics counts every file iCloud stores for an item, so the sizes it shows add
 | Duplicates & Similar | exact copies first, which can all go in one click; then photos taken less than a minute apart that look alike, with the best one picked to keep |
 | Live Photos | **Remove Motion**: each one becomes a still, with its edit, the same date, place, favorite and albums |
 | No People or Pets | Live Photos where Vision finds no person, face, cat or dog: the motion rarely matters there |
+| Hidden Motion | stills that still store a Live Photo's motion clip, which Photos no longer plays but iCloud still counts: Remove Motion frees it |
 | Edited | **Keep Edited Version**: the edited version alone replaces the item, and the original under it goes; a Live Photo stays live, with its edited motion |
 | Only Rotated | edits that only rotate an item (or change nothing), where the original is a full extra copy: same Keep Edited Version |
 | Screenshots | rarely worth keeping for long |
@@ -92,7 +93,9 @@ libvmaf. Everything else works without it.
 - **Remove Motion and Keep Edited Version** ask Photos for the item as it looks now (an unedited photo comes
   back as its original file, not re-encoded), save it as a new item with the same date, place, favorite and
   albums, and delete the old one in the same change. macOS asks once per batch of 200, and a batch you refuse
-  leaves nothing behind. Keep Edited Version saves an edited Live Photo's rendered still and motion
+  leaves nothing behind. Remove Motion saves the still as a new file, with one extra metadata tag and no
+  re-encoding: an unedited photo comes from Photos as its original file, and iCloud takes a byte-for-byte copy
+  for the original and keeps its motion clip attached. Keep Edited Version saves an edited Live Photo's rendered still and motion
   together: Photos writes the same pairing id in both, so the new item is a Live Photo again.
 - **Shrinking videos**: each video is exported from Photos as it looks now (a rotated or trimmed video keeps
   its edit; Photos stores those twice, so deleting the original frees both), re-encoded with libx265 (CRF 26, or 28 for

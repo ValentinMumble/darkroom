@@ -26,6 +26,7 @@ struct GridView: View {
         if library.shrinkStatus.shrunk.contains(item.id) { return "Copy saved" }
         if library.shrinkStatus.kept.contains(item.id) { return "Not shrunk" }
         if item.onlyRotated { return "Only rotated" }
+        if item.hiddenMotion { return "Hidden motion" }
         return nil
     }
 

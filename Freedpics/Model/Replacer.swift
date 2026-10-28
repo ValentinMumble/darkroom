@@ -18,7 +18,7 @@ enum Replacement: String, Identifiable {
     /// Keep Edited Version needs a second file to free: a slow-motion video's edit, for one, is only a setting
     /// Photos applies when playing it
     func applies(to item: Item) -> Bool {
-        self == .removeMotion ? item.live : item.edited && item.editedSize > 0
+        self == .removeMotion ? item.live || item.hiddenMotion : item.edited && item.editedSize > 0
     }
 
     /// Whether the new item is a Live Photo too
@@ -112,7 +112,25 @@ enum Replacer {
         let fileExtension = uti.flatMap { UTType($0)?.preferredFilenameExtension } ?? "heic"
         let file = itemFolder.appending(path: stem + "." + fileExtension)
         try data.write(to: file)
+        try makeNew(file)
         return Entry(item: item, file: file, type: .photo, motion: nil)
+    }
+
+    /// Rewrites a still with one tag of its own, without re-encoding it. An unedited photo comes from Photos as its
+    /// original file, byte for byte, and iCloud takes such a copy for the original: it attached the original's
+    /// motion clip back to it, so Remove Motion freed nothing.
+    nonisolated private static func makeNew(_ file: URL) throws {
+        guard let source = CGImageSourceCreateWithURL(file as CFURL, nil), let type = CGImageSourceGetType(source),
+            let metadata = CGImageSourceCopyMetadataAtIndex(source, 0, nil),
+            let tagged = CGImageMetadataCreateMutableCopy(metadata)
+        else { throw FFmpeg.Failure(message: "could not read the still to save it as a new file") }
+        CGImageMetadataSetValueWithPath(tagged, nil, "xmp:MetadataDate" as CFString, Date.now.ISO8601Format() as CFString)
+        let rewritten = file.deletingLastPathComponent().appending(path: "new-" + file.lastPathComponent)
+        let options = [kCGImageDestinationMetadata: tagged, kCGImageDestinationMergeMetadata: false] as CFDictionary
+        guard let destination = CGImageDestinationCreateWithURL(rewritten as CFURL, type, 1, nil),
+            CGImageDestinationCopyImageSource(destination, source, options, nil)
+        else { throw FFmpeg.Failure(message: "could not save the still as a new file") }
+        _ = try FileManager.default.replaceItemAt(file, withItemAt: rewritten)
     }
 
     /// The Live Photo as Photos shows it, downloaded and rendered when needed

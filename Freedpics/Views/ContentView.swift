@@ -195,10 +195,10 @@ struct ContentView: View {
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         let videos = selected.filter { $0.kind == .video }.count
         let shrinkable = selected.filter { library.shrinkSkip($0) == nil }.count
-        let live = selected.filter(\.live).count
+        let live = selected.filter(Replacement.removeMotion.applies).count
         let edited = selected.filter(Replacement.keepEdit.applies).count
         let markedItems = library.items.filter { library.marked.contains($0.id) }
-        if current == .live || current == .lifeless || (live > 0 && current != .edited && current != .rotated) {
+        if current == .live || current == .lifeless || current == .hiddenMotion || (live > 0 && current != .edited && current != .rotated) {
             ToolbarItem {
                 Button {
                     actions.replace(selected, .removeMotion)

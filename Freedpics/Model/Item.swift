@@ -52,6 +52,10 @@ struct Item: Identifiable, Hashable {
         location = asset.location
     }
 
+    /// A still that keeps a motion clip Photos no longer plays: what Remove Motion left behind before it saved
+    /// stills as new files
+    var hiddenMotion: Bool { kind == .photo && !live && motionSize > 0 }
+
     /// The uuid Photos uses in links: the local identifier without its "/L0/001" suffix
     var uuid: String { String(id.prefix { $0 != "/" }) }
 
