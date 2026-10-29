@@ -1,4 +1,4 @@
-# Freedpics 📸
+# Freedown 📸
 
 A Mac app to see what fills your iCloud Photos, and to clean it up. It shows what each photo and video
 really costs in iCloud, finds duplicates and near-identical shots, strips the motion from Live Photos,
@@ -20,7 +20,7 @@ iCloud says "Photos: 35 GB" and nothing more. Most of it is rarely the photos th
 - **Videos** are usually the biggest items by far, and a few are worth re-encoding.
 - **Bursts and retakes**: several shots of the same moment.
 
-Freedpics counts every file iCloud stores for an item, so the sizes it shows add up to what iCloud bills.
+Freedown counts every file iCloud stores for an item, so the sizes it shows add up to what iCloud bills.
 
 ## What it does
 
@@ -47,7 +47,7 @@ their date or open them in Photos (double-click does that too). The keyboard wor
 through the grid, Cmd-A selects everything shown, Space plays or pauses the video or Live Photo in the panel,
 Return opens the item in Photos, and M marks Live Photos for Remove Motion.
 
-Clicking "Saved with Freedpics" in the sidebar shows what each day saved, by kind of change, next to iCloud's
+Clicking "Saved with Freedown" in the sidebar shows what each day saved, by kind of change, next to iCloud's
 free space read along the way. When shrinking or a replacement ends while you are in another app, a
 notification says how it went. The shrink queue survives quitting the app, and so do the hashes and Vision
 answers, so only new and edited photos are analysed again. Deleted items stay in Recently Deleted for
@@ -63,11 +63,11 @@ date, shift by an amount, or read the date from the file name (`%Y%m%d_%H%M%S` r
 
 ## Install
 
-Needs macOS 26 or later and Xcode. Open `Freedpics.xcodeproj` and press Run, or from the terminal:
+Needs macOS 26 or later and Xcode. Open `Freedown.xcodeproj` and press Run, or from the terminal:
 
 ```
-xcodebuild -project Freedpics.xcodeproj -scheme Freedpics -destination 'platform=macOS' -derivedDataPath build build
-open build/Build/Products/Debug/Freedpics.app
+xcodebuild -project Freedown.xcodeproj -scheme Freedown -destination 'platform=macOS' -derivedDataPath build build
+open build/Build/Products/Debug/Freedown.app
 ```
 
 The unit tests (Swift Testing) run with `xcodebuild test` and the same arguments. They cover the arithmetic
@@ -88,11 +88,11 @@ libvmaf. Everything else works without it.
   quota service in `~/Library/Caches/com.apple.iCloudNotificationAgent/Cache.db`, among them
   `getCloudStorageApps`: the numbers System Settings shows. The plan size follows from the share of the plan
   each app takes, and `brctl quota` gives the free space live, every minute. macOS refreshes the split by app
-  only now and then, so the sidebar also shows what was freed since, and a running total of what Freedpics
-  itself freed, kept across launches in `~/Library/Application Support/Freedpics/savings.json`. iCloud counts in powers of 1024
+  only now and then, so the sidebar also shows what was freed since, and a running total of what Freedown
+  itself freed, kept across launches in `~/Library/Application Support/Freedown/savings.json`. iCloud counts in powers of 1024
   (37,472,142,715 bytes show as "34.9 GB"), so the app does too.
 - **Recently Deleted**: PhotoKit never shows deleted items to other apps, even through its private options, so
-  Freedpics reads their count and size from Photos' own database, read-only. macOS allows that only with Full
+  Freedown reads their count and size from Photos' own database, read-only. macOS allows that only with Full
   Disk Access; without it, the sidebar offers to open the setting.
 - **Similar shots** compare a 64-bit difference hash of a small render: one bit per pixel of a 9x8 grey
   thumbnail, set when it is brighter than its right neighbour. On a 7,000-item library, shots of the same
@@ -122,7 +122,7 @@ libvmaf. Everything else works without it.
   (100 = identical). VMAF pairs frames by index: iPhone videos have an uneven frame rate, and pairing them by
   timestamp scores a perfect copy around 45. The copy goes into Photos only when it is at least 20% smaller
   and scores 93 or more (88 for "Smaller files"; the Shrink window changes that bar, remembered per preset); the originals go when you press Delete Originals. A copy
-  refused only for its score waits in `~/Library/Caches/Freedpics/Previews`: the Shrinking view plays it and
+  refused only for its score waits in `~/Library/Caches/Freedown/Previews`: the Shrinking view plays it and
   the original in one player that switches between the two at the same moment, and saves it anyway if it
   looks fine. Apple's
   own HEVC encoder was tried and made iPhone videos bigger at the same quality. Expect savings on some videos
@@ -138,14 +138,14 @@ libvmaf. Everything else works without it.
   The space freed is the size Photos reports for the new item once it exists, not the estimate.
 - **What was freed** is read back from Photos after each replacement: the new item's files, not the expected
   size. iCloud's free space is also saved once an hour (`icloud-free.json`), so the history can set what
-  Freedpics counted against what iCloud really gained. It moves with everything else in iCloud too.
+  Freedown counted against what iCloud really gained. It moves with everything else in iCloud too.
 - **iCloud Drive** reads `~/Library/Mobile Documents`, which iCloud keeps in step: iCloud Drive itself
   (`com~apple~CloudDocs`) and one folder per app, named as Finder names them. Sizes are what iCloud stores,
   read from each file's size, so files only in iCloud count too. An app's files under its `Documents` folder
   are its iCloud Drive folder; anything else (WhatsApp's chat backup, for one) is the app's own data, listed
   but deleted from the app. Move to Trash takes a file out of iCloud Drive on every device. macOS keeps some
   files for the apps that made or opened them (the `com.apple.macl` mark, common on files that came from
-  elsewhere) and refuses to let other apps trash them; Freedpics then asks Finder, through `osascript`, and
+  elsewhere) and refuses to let other apps trash them; Freedown then asks Finder, through `osascript`, and
   macOS asks once whether it may control Finder. Apple says
   files in iCloud Drive's Recently Deleted no longer count toward your storage
   ([Delete files in iCloud Drive](https://support.apple.com/guide/icloud/mm3b7fcd0c10/icloud)).
@@ -166,21 +166,21 @@ libvmaf. Everything else works without it.
 
 | File | Role |
 |---|---|
-| `Freedpics/Model/Library.swift` | the library as the app shows it: items, counts, marks, saved space |
-| `Freedpics/Model/LibraryScan.swift` | reading the library, the exact copies and the sidebar counts |
-| `Freedpics/Model/Library+Changes.swift` | every change: deletions, favorites, dates, replacements |
-| `Freedpics/Model/Item.swift` | an item and the files behind it |
-| `Freedpics/Model/Analysis.swift`, `Similar.swift`, `Subjects.swift`, `Accidental.swift` | similar shots and Vision, cached on disk |
-| `Freedpics/Model/Replacer.swift`, `Stills.swift` | Remove Motion, Keep Edited Version, Convert to HEIC |
-| `Freedpics/Model/Shrinker.swift`, `ShrinkPipeline.swift`, `ShrinkRecords.swift`, `FFmpeg.swift` | shrinking videos |
-| `Freedpics/Model/ICloudStorage.swift`, `RecentlyDeleted.swift` | iCloud storage by app, Recently Deleted |
-| `Freedpics/Model/ICloudDrive.swift` | the biggest files in iCloud Drive |
-| `Freedpics/Model/Savings.swift` | the space Freedpics freed and iCloud's free space, kept across launches |
-| `Freedpics/Model/Settings.swift` | the settings' names and the app's folders |
-| `Freedpics/Model/DateChange.swift` | date changes and reading dates from file names |
-| `Freedpics/Model/Destination.swift` | the sidebar entries and sort orders |
-| `Freedpics/Views/` | the SwiftUI views |
-| `FreedpicsTests/` | the unit tests |
+| `Freedown/Model/Library.swift` | the library as the app shows it: items, counts, marks, saved space |
+| `Freedown/Model/LibraryScan.swift` | reading the library, the exact copies and the sidebar counts |
+| `Freedown/Model/Library+Changes.swift` | every change: deletions, favorites, dates, replacements |
+| `Freedown/Model/Item.swift` | an item and the files behind it |
+| `Freedown/Model/Analysis.swift`, `Similar.swift`, `Subjects.swift`, `Accidental.swift` | similar shots and Vision, cached on disk |
+| `Freedown/Model/Replacer.swift`, `Stills.swift` | Remove Motion, Keep Edited Version, Convert to HEIC |
+| `Freedown/Model/Shrinker.swift`, `ShrinkPipeline.swift`, `ShrinkRecords.swift`, `FFmpeg.swift` | shrinking videos |
+| `Freedown/Model/ICloudStorage.swift`, `RecentlyDeleted.swift` | iCloud storage by app, Recently Deleted |
+| `Freedown/Model/ICloudDrive.swift` | the biggest files in iCloud Drive |
+| `Freedown/Model/Savings.swift` | the space Freedown freed and iCloud's free space, kept across launches |
+| `Freedown/Model/Settings.swift` | the settings' names and the app's folders |
+| `Freedown/Model/DateChange.swift` | date changes and reading dates from file names |
+| `Freedown/Model/Destination.swift` | the sidebar entries and sort orders |
+| `Freedown/Views/` | the SwiftUI views |
+| `FreedownTests/` | the unit tests |
 
 ## License
 
